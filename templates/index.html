@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ApuntesIA - Generador Inteligente de Apuntes y Estudio</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
+    <!-- KaTeX CSS & JS for math rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
+    <!-- Marked.js for Markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- Mermaid.js for interactive diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navigation -->
+        <header class="top-nav">
+            <div class="nav-brand">
+                <div class="brand-logo">
+                    <i class="fa-solid fa-graduation-cap"></i>
+                </div>
+                <div class="brand-text">
+                    <span class="brand-name">Apuntes<span>IA</span></span>
+                    <span class="brand-tagline">Estudio Inteligente con Gemini</span>
+                </div>
+            </div>
+
+            <div class="nav-actions">
+                <button id="btn-load-demo" class="btn-subtle nav-btn" title="Cargar un apunte de ejemplo completo">
+                    <i class="fa-solid fa-sparkles"></i>
+                    <span>Ver Apunte de Ejemplo</span>
+                </button>
+                <button id="btn-api-key" class="btn-secondary nav-btn" title="Configurar clave Gemini">
+                    <i class="fa-solid fa-key"></i>
+                    <span id="key-status-text">Configurar API Key</span>
+                    <span id="key-indicator" class="status-dot"></span>
+                </button>
+                <button id="btn-theme-toggle" class="icon-btn" title="Cambiar tema">
+                    <i class="fa-solid fa-moon"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="main-content">
+            <!-- INPUT DASHBOARD VIEW -->
+            <section id="input-view" class="view-section active">
+                <div class="hero-header">
+                    <div class="hero-badge">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                        Aprende 10x más rápido
+                    </div>
+                    <h1>Transforma videos y documentos en <span class="gradient-text">apuntes maestros</span></h1>
+                    <p class="hero-subtitle">Ingresa un enlace de YouTube o sube tus PDFs. La IA sintetizará conceptos clave, desarrollos paso a paso, fórmulas, diagramas visuales y flashcards.</p>
+                </div>
+
+                <form id="generator-form" class="dashboard-grid">
+                    <!-- Left: Inputs -->
+                    <div class="input-cards-column">
+                        <!-- YouTube Card (Multi-URL) -->
+                        <div class="glass-card source-card">
+                            <div class="card-header">
+                                <div class="card-icon yt-icon">
+                                    <i class="fa-brands fa-youtube"></i>
+                                </div>
+                                <div class="card-header-info">
+                                    <div class="card-title-row">
+                                        <h3>Videos de YouTube</h3>
+                                        <span id="yt-count-badge" class="badge-count hidden">0 videos</span>
+                                    </div>
+                                    <p>Pega uno o varios enlaces (ej: Parte 1, Parte 2... o una lista de links)</p>
+                                </div>
+                            </div>
+                            
+                            <div class="input-group">
+                                <div class="input-with-icon">
+                                    <i class="fa-solid fa-link"></i>
+                                    <input type="text" id="youtube-url" placeholder="Pega el enlace aquí y presiona Agregar..." autocomplete="off">
+                                </div>
+                                <button type="button" id="btn-add-yt" class="btn-primary btn-add" title="Agregar video">
+                                    <i class="fa-solid fa-plus"></i>
+                                    <span>Agregar</span>
+                                </button>
+                            </div>
+
+                            <!-- Multiple YouTube Videos Preview List -->
+                            <div id="yt-videos-list" class="yt-videos-list hidden">
+                                <!-- Populated dynamically with video cards -->
+                            </div>
+                        </div>
+
+                        <!-- PDF Upload Card -->
+                        <div class="glass-card source-card">
+                            <div class="card-header">
+                                <div class="card-icon pdf-icon">
+                                    <i class="fa-solid fa-file-pdf"></i>
+                                </div>
+                                <div>
+                                    <h3>Documentos y Lecturas (PDF)</h3>
+                                    <p>Libros de texto, diapositivas o resúmenes</p>
+                                </div>
+                            </div>
+
+                            <div class="dropzone" id="pdf-dropzone">
+                                <input type="file" id="pdf-files" name="pdfFiles" accept="application/pdf" multiple hidden>
+                                <i class="fa-solid fa-cloud-arrow-up drop-icon"></i>
+                                <p class="drop-title">Arrastra tus archivos PDF aquí</p>
+                                <p class="drop-hint">o haz clic para explorar en tu computadora</p>
+                            </div>
+
+                            <!-- Selected files list -->
+                            <div id="file-list" class="file-list hidden"></div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Study Preferences & Action -->
+                    <div class="options-column">
+                        <div class="glass-card options-card">
+                            <h3><i class="fa-solid fa-sliders"></i> Preferencias de Estudio</h3>
+                            
+                            <!-- Depth selector -->
+                            <div class="option-field">
+                                <label class="field-label">Nivel de Detalle del Apunte:</label>
+                                <div class="radio-cards">
+                                    <label class="radio-card">
+                                        <input type="radio" name="depth" value="conciso">
+                                        <div class="radio-content">
+                                            <span class="radio-title"><i class="fa-solid fa-bolt"></i> Resumen Conciso</span>
+                                            <span class="radio-desc">Ideal para repaso veloz pre-examen</span>
+                                        </div>
+                                    </label>
+
+                                    <label class="radio-card active">
+                                        <input type="radio" name="depth" value="completo" checked>
+                                        <div class="radio-content">
+                                            <span class="radio-title"><i class="fa-solid fa-book-open"></i> Apunte Completo</span>
+                                            <span class="radio-desc">Equilibrado con explicaciones y ejemplos</span>
+                                        </div>
+                                    </label>
+
+                                    <label class="radio-card">
+                                        <input type="radio" name="depth" value="exhaustivo">
+                                        <div class="radio-content">
+                                            <span class="radio-title"><i class="fa-solid fa-microscope"></i> Guía Exhaustiva</span>
+                                            <span class="radio-desc">Máximo rigor, demostraciones y casos</span>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <!-- Custom prompt / focus -->
+                            <div class="option-field">
+                                <label for="instructions" class="field-label">
+                                    <span>Instrucciones o Enfoque Personalizado</span>
+                                    <span class="label-badge">Opcional</span>
+                                </label>
+                                <textarea id="instructions" name="instructions" rows="3" placeholder="Ej: 'Presta especial atención al teorema central', 'Desarrolla en detalle los pasos del ejercicio', o 'Explícalo como para principiantes'..."></textarea>
+                            </div>
+
+                            <!-- Generate CTA -->
+                            <div class="action-box">
+                                <button type="submit" id="btn-generate" class="btn-primary btn-cta">
+                                    <span class="btn-content">
+                                        <i class="fa-solid fa-sparkles"></i>
+                                        <span>Generar Apunte Inteligente</span>
+                                    </span>
+                                </button>
+                                <p class="cta-notice"><i class="fa-solid fa-shield-halved"></i> Análisis directo en memoria sin almacenar tus datos privados.</p>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </section>
+
+            <!-- LOADING SCREEN VIEW -->
+            <section id="loading-view" class="view-section hidden">
+                <div class="loading-container glass-card">
+                    <div class="loading-spinner">
+                        <div class="orbit-spinner">
+                            <div class="orbit"></div>
+                            <div class="orbit"></div>
+                            <div class="orbit"></div>
+                            <i class="fa-solid fa-brain brain-core"></i>
+                        </div>
+                    </div>
+                    <h2 id="loading-status-title">Analizando el material...</h2>
+                    <p id="loading-status-desc">Extrayendo transcripción y estructurando los conceptos principales.</p>
+                    
+                    <div class="progress-track">
+                        <div id="progress-bar" class="progress-fill"></div>
+                    </div>
+
+                    <div class="step-indicators">
+                        <div class="step-item active" id="step-1"><i class="fa-solid fa-check"></i> Ingesta de fuentes</div>
+                        <div class="step-item" id="step-2"><i class="fa-solid fa-circle"></i> Síntesis y Desarrollos</div>
+                        <div class="step-item" id="step-3"><i class="fa-solid fa-circle"></i> Generando Diagramas & Quizzes</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- RESULTS / STUDY VIEWER VIEW -->
+            <section id="results-view" class="view-section hidden">
+                <!-- Action Bar -->
+                <div class="results-toolbar">
+                    <div class="toolbar-left">
+                        <button id="btn-back-to-input" class="btn-secondary">
+                            <i class="fa-solid fa-arrow-left"></i> Nuevo Apunte
+                        </button>
+                        <div class="doc-meta-badge">
+                            <span id="doc-title-badge">Cargando apunte...</span>
+                        </div>
+                    </div>
+
+                    <div class="toolbar-right">
+                        <button id="btn-copy-markdown" class="btn-subtle" title="Copiar apunte en formato Markdown">
+                            <i class="fa-solid fa-copy"></i> Copiar
+                        </button>
+                        <button id="btn-export-pdf" class="btn-primary" title="Exportar o imprimir apunte limpio">
+                            <i class="fa-solid fa-print"></i> Imprimir / Guardar PDF
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Content Tabs -->
+                <div class="study-tabs">
+                    <button class="tab-btn active" data-tab="tab-notes">
+                        <i class="fa-solid fa-book-bookmark"></i> Apunte & Desarrollos
+                    </button>
+                    <button class="tab-btn" data-tab="tab-flashcards">
+                        <i class="fa-solid fa-clone"></i> Flashcards (<span id="flashcards-count">0</span>)
+                    </button>
+                    <button class="tab-btn" data-tab="tab-quiz">
+                        <i class="fa-solid fa-list-check"></i> Examen de Prueba (<span id="quiz-count">0</span>)
+                    </button>
+                    <button class="tab-btn" data-tab="tab-diagram">
+                        <i class="fa-solid fa-diagram-project"></i> Mapa Conceptual
+                    </button>
+                </div>
+
+                <!-- TAB 1: NOTES & DEVELOPMENTS -->
+                <div id="tab-notes" class="tab-pane active">
+                    <article id="printable-document" class="academic-document">
+                        <!-- Document Header -->
+                        <div class="doc-header">
+                            <span class="doc-tag"><i class="fa-solid fa-sparkles"></i> Material de Estudio Generado por IA</span>
+                            <h1 id="note-main-title" class="doc-title">Título del Tema</h1>
+                            <p id="note-overview" class="doc-overview">Descripción del contenido...</p>
+                            
+                            <div class="doc-info-chips">
+                                <span class="info-chip"><i class="fa-regular fa-clock"></i> Tiempo estimado: <strong id="note-est-time">25 min</strong></span>
+                                <span class="info-chip" id="source-chips-container"></span>
+                            </div>
+                        </div>
+
+                        <!-- SECTION: COSAS IMPORTANTES / KEY TAKEAWAYS -->
+                        <div class="study-section key-takeaways-section">
+                            <div class="section-title-wrap">
+                                <i class="fa-solid fa-lightbulb"></i>
+                                <h2>Cosas Importantes & Reglas de Oro</h2>
+                            </div>
+                            <p class="section-lead">Conceptos no negociables que debes dominar para entender y aprobar el tema:</p>
+                            <div id="key-takeaways-grid" class="takeaways-grid">
+                                <!-- Dynamically populated cards -->
+                            </div>
+                        </div>
+
+                        <!-- SECTION: DESARROLLOS PASO A PASO -->
+                        <div class="study-section developments-section">
+                            <div class="section-title-wrap">
+                                <i class="fa-solid fa-cubes-stacked"></i>
+                                <h2>Desarrollo Exhaustivo de los Temas</h2>
+                            </div>
+                            <div id="developments-container" class="developments-list">
+                                <!-- Dynamically populated units -->
+                            </div>
+                        </div>
+
+                        <!-- SECTION: TIPS DE EXAMEN -->
+                        <div class="study-section exam-tips-section">
+                            <div class="section-title-wrap">
+                                <i class="fa-solid fa-bullseye"></i>
+                                <h2>Puntos Clave y Trampas de Examen</h2>
+                            </div>
+                            <div id="exam-tips-list" class="exam-tips-container">
+                                <!-- Dynamically populated tips -->
+                            </div>
+                        </div>
+
+                        <!-- SECTION: GLOSARIO -->
+                        <div class="study-section glossary-section">
+                            <div class="section-title-wrap">
+                                <i class="fa-solid fa-spell-check"></i>
+                                <h2>Glosario de Términos Clave</h2>
+                            </div>
+                            <div id="glossary-grid" class="glossary-container">
+                                <!-- Dynamically populated terms -->
+                            </div>
+                        </div>
+                    </article>
+                </div>
+
+                <!-- TAB 2: FLASHCARDS -->
+                <div id="tab-flashcards" class="tab-pane">
+                    <div class="flashcards-wrapper">
+                        <div class="flashcards-header">
+                            <div>
+                                <h3>Tarjetas de Repaso Activo (Flashcards)</h3>
+                                <p>Haz clic en la tarjeta para voltearla. Utilízala para evaluar tu memoria.</p>
+                            </div>
+                            <div class="flashcard-counter">
+                                Tarjeta <span id="current-card-num">1</span> de <span id="total-cards-num">0</span>
+                            </div>
+                        </div>
+
+                        <div class="flashcard-scene">
+                            <div id="active-flashcard" class="flashcard-card">
+                                <div class="flashcard-face flashcard-front">
+                                    <span class="card-badge" id="card-topic-front">Tema</span>
+                                    <div class="card-body">
+                                        <p id="card-question-text">Pregunta...</p>
+                                    </div>
+                                    <span class="card-hint"><i class="fa-solid fa-hand-pointer"></i> Clic para voltear y ver la respuesta</span>
+                                </div>
+                                <div class="flashcard-face flashcard-back">
+                                    <span class="card-badge success">Respuesta</span>
+                                    <div class="card-body">
+                                        <p id="card-answer-text">Respuesta...</p>
+                                    </div>
+                                    <span class="card-hint"><i class="fa-solid fa-arrow-rotate-left"></i> Clic para volver a la pregunta</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flashcard-controls">
+                            <button id="btn-prev-card" class="btn-secondary"><i class="fa-solid fa-arrow-left"></i> Anterior</button>
+                            <button id="btn-flip-card" class="btn-primary"><i class="fa-solid fa-rotate"></i> Voltear</button>
+                            <button id="btn-next-card" class="btn-secondary">Siguiente <i class="fa-solid fa-arrow-right"></i></button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 3: QUIZ DE AUTOEVALUACIÓN -->
+                <div id="tab-quiz" class="tab-pane">
+                    <div class="quiz-wrapper glass-card">
+                        <div class="quiz-header">
+                            <div>
+                                <h3>Simulador de Examen</h3>
+                                <p>Pon a prueba lo que acabas de aprender con estas preguntas tipo examen.</p>
+                            </div>
+                            <div id="quiz-score-badge" class="quiz-score-chip hidden">
+                                Puntaje: <span id="quiz-score-value">0</span> / <span id="quiz-total-value">0</span>
+                            </div>
+                        </div>
+
+                        <div id="quiz-container" class="quiz-questions-list">
+                            <!-- Populated with quiz questions -->
+                        </div>
+
+                        <div class="quiz-footer">
+                            <button id="btn-reset-quiz" class="btn-secondary"><i class="fa-solid fa-arrow-rotate-right"></i> Reiniciar Quiz</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 4: DIAGRAMA GLOBAL -->
+                <div id="tab-diagram" class="tab-pane">
+                    <div class="diagram-wrapper glass-card">
+                        <div class="diagram-header">
+                            <h3 id="diagram-title">Mapa Conceptual y Relaciones</h3>
+                            <p>Estructura lógica global de los temas analizados.</p>
+                        </div>
+                        <div id="mermaid-global-container" class="mermaid-box">
+                            <!-- Rendered Mermaid diagram -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- API Key Modal -->
+        <div id="modal-api-key" class="modal-overlay hidden">
+            <div class="modal-box glass-card">
+                <div class="modal-header">
+                    <div class="modal-title-wrap">
+                        <i class="fa-solid fa-key icon-accent"></i>
+                        <h3>Configuración de Gemini API Key</h3>
+                    </div>
+                    <button id="btn-close-modal" class="icon-btn"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+
+                <div class="modal-body">
+                    <p class="modal-text">Para sintetizar videos y documentos con la mayor precisión, ingresa tu clave gratuita de Google Gemini (Google AI Studio).</p>
+                    
+                    <div class="input-field">
+                        <label for="input-api-key">Gemini API Key</label>
+                        <div class="input-with-icon">
+                            <i class="fa-solid fa-lock"></i>
+                            <input type="password" id="input-api-key" placeholder="AIzaSy..." autocomplete="off">
+                            <button type="button" id="btn-toggle-key-vis" class="icon-btn-inline" title="Mostrar/ocultar">
+                                <i class="fa-solid fa-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="key-help-box">
+                        <i class="fa-solid fa-circle-info"></i>
+                        <div>
+                            <span>¿No tienes una clave todavía?</span>
+                            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">
+                                Obtén tu clave gratuita en Google AI Studio <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                            </a>
+                        </div>
+                    </div>
+
+                    <div id="key-message-box" class="message-box hidden"></div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" id="btn-cancel-key" class="btn-secondary">Cancelar</button>
+                    <button type="button" id="btn-save-key" class="btn-primary">Guardar Clave</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Notification -->
+        <div id="toast" class="toast hidden">
+            <i class="fa-solid fa-info-circle toast-icon"></i>
+            <span id="toast-msg">Mensaje</span>
+        </div>
+    </div>
+
+    <!-- Application Script -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
