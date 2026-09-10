@@ -435,7 +435,39 @@ textarea:focus {
 .card-title-row {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 0.75rem;
+}
+
+.card-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.btn-clear-all {
+    background: rgba(244, 63, 94, 0.12);
+    color: #fda4af;
+    border: 1px solid rgba(244, 63, 94, 0.3);
+    border-radius: var(--radius-full);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.2rem 0.65rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    transition: var(--transition-smooth);
+}
+
+.btn-clear-all:hover, .btn-clear-all:active {
+    background: rgba(244, 63, 94, 0.25);
+    border-color: rgba(244, 63, 94, 0.6);
+    color: #ffffff;
+}
+
+.btn-clear-all.hidden {
+    display: none;
 }
 
 .badge-count {
@@ -534,11 +566,11 @@ textarea:focus {
 }
 
 .remove-item-btn {
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     border-radius: var(--radius-sm);
-    background: transparent;
-    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-subtle);
     color: var(--text-dim);
     display: flex;
     align-items: center;
@@ -548,10 +580,10 @@ textarea:focus {
     flex-shrink: 0;
 }
 
-.remove-item-btn:hover {
-    color: var(--accent-rose);
-    background: rgba(244, 63, 94, 0.12);
-    border-color: rgba(244, 63, 94, 0.3);
+.remove-item-btn:hover, .remove-item-btn:active {
+    color: #ffffff;
+    background: rgba(244, 63, 94, 0.22);
+    border-color: rgba(244, 63, 94, 0.45);
 }
 
 .badge-success {

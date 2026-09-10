@@ -82,7 +82,12 @@
                                 <div class="card-header-info">
                                     <div class="card-title-row">
                                         <h3>Videos de YouTube</h3>
-                                        <span id="yt-count-badge" class="badge-count hidden">0 videos</span>
+                                        <div class="card-header-actions">
+                                            <span id="yt-count-badge" class="badge-count hidden">0 videos</span>
+                                            <button type="button" id="btn-clear-yt" class="btn-clear-all hidden" title="Quitar todos los videos">
+                                                <i class="fa-solid fa-trash-can"></i> Limpiar
+                                            </button>
+                                        </div>
                                     </div>
                                     <p>Pega uno o varios enlaces (ej: Parte 1, Parte 2... o una lista de links)</p>
                                 </div>
@@ -111,8 +116,16 @@
                                 <div class="card-icon pdf-icon">
                                     <i class="fa-solid fa-file-pdf"></i>
                                 </div>
-                                <div>
-                                    <h3>Documentos y Lecturas (PDF)</h3>
+                                <div class="card-header-info">
+                                    <div class="card-title-row">
+                                        <h3>Documentos y Lecturas (PDF)</h3>
+                                        <div class="card-header-actions">
+                                            <span id="pdf-count-badge" class="badge-count hidden">0 archivos</span>
+                                            <button type="button" id="btn-clear-pdf" class="btn-clear-all hidden" title="Quitar todos los PDFs">
+                                                <i class="fa-solid fa-trash-can"></i> Limpiar
+                                            </button>
+                                        </div>
+                                    </div>
                                     <p>Libros de texto, diapositivas o resúmenes</p>
                                 </div>
                             </div>

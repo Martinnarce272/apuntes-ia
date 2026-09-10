@@ -545,6 +545,7 @@ def generate_notes():
     
     collected_sources = []
     source_texts = []
+    multimodal_parts = []
     video_metadata = None
 
     # 1. Process YouTube videos if provided (supports multiple URLs)
@@ -559,6 +560,8 @@ def generate_notes():
         if u and u not in cleaned_urls:
             cleaned_urls.append(u)
 
+    from google.genai import types
+
     for idx, url in enumerate(cleaned_urls):
         video_id = extract_youtube_id(url)
         if not video_id:
@@ -567,23 +570,40 @@ def generate_notes():
         v_meta = get_youtube_metadata(video_id)
         transcript_res = get_youtube_transcript(video_id)
         
-        if not transcript_res["success"]:
-            return jsonify({
-                "success": False, 
-                "error": f"Error en video #{idx+1} ('{v_meta['title']}'): {transcript_res['error']}"
-            }), 400
-            
-        collected_sources.append({
-            "type": "youtube",
-            "title": v_meta["title"],
-            "id": video_id,
-            "thumbnail": v_meta["thumbnail"],
-            "order": idx + 1
-        })
-        source_texts.append(
-            f"=== FUENTE VIDEO DE YOUTUBE #{idx+1}: '{v_meta['title']}' ===\n"
-            f"Transcripción con marcas de tiempo:\n{transcript_res['timed_text']}"
-        )
+        if transcript_res.get("success"):
+            collected_sources.append({
+                "type": "youtube",
+                "title": v_meta["title"],
+                "id": video_id,
+                "thumbnail": v_meta["thumbnail"],
+                "order": idx + 1,
+                "mode": "transcript"
+            })
+            source_texts.append(
+                f"=== FUENTE VIDEO DE YOUTUBE #{idx+1}: '{v_meta['title']}' ===\n"
+                f"Transcripción con marcas de tiempo:\n{transcript_res['timed_text']}"
+            )
+        else:
+            # Video does not have subtitles/CC available: seamless fallback to Gemini native multimodal video
+            try:
+                print(f"Video '{v_meta['title']}' ({video_id}) sin subtítulos CC. Usando comprensión audiovisual nativa de Gemini...")
+            except Exception:
+                pass
+            collected_sources.append({
+                "type": "youtube",
+                "title": v_meta["title"],
+                "id": video_id,
+                "thumbnail": v_meta["thumbnail"],
+                "order": idx + 1,
+                "mode": "multimodal"
+            })
+            multimodal_parts.append(
+                types.Part(file_data=types.FileData(file_uri=f"https://www.youtube.com/watch?v={video_id}"))
+            )
+            source_texts.append(
+                f"=== FUENTE VIDEO DE YOUTUBE #{idx+1} (PROCESAMIENTO AUDIOVISUAL NATIVO): '{v_meta['title']}' ===\n"
+                f"Analiza minuciosamente el video adjunto: comprende el audio, diálogo, narración, explicaciones y elementos visuales para sintetizar todo el contenido pedagógico."
+            )
 
     # 2. Process uploaded PDF files if provided
     uploaded_files = request.files.getlist('pdfFiles')
@@ -607,7 +627,7 @@ def generate_notes():
             else:
                 return jsonify({"success": False, "error": pdf_res["error"]}), 400
 
-    if not source_texts:
+    if not source_texts and not multimodal_parts:
         return jsonify({"success": False, "error": "Debes proporcionar al menos un enlace de YouTube o un archivo PDF."}), 400
 
     # Assemble User Prompt
@@ -631,10 +651,15 @@ A continuación tienes el material fuente para analizar y sintetizar:
 Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
 """
 
+    # Assemble contents payload including any multimodal video parts
+    contents_payload = []
+    for part in multimodal_parts:
+        contents_payload.append(part)
+    contents_payload.append(types.Part(text=user_prompt))
+
     # Call Gemini API using official google-genai SDK
     try:
         from google import genai
-        from google.genai import types
         
         client = genai.Client(api_key=api_key)
         
@@ -645,8 +670,8 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
         )
 
         import time
-        # Try current models: gemini-3.6-flash, gemini-3.7-flash, gemini-3.5-flash-lite
-        models_to_try = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"]
+        # Robust model fallback list
+        models_to_try = ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
         response = None
         last_error = None
         
@@ -655,7 +680,7 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
                 try:
                     response = client.models.generate_content(
                         model=model_name,
-                        contents=user_prompt,
+                        contents=contents_payload,
                         config=config
                     )
                     if response and response.text:

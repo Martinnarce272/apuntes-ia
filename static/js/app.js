@@ -43,9 +43,12 @@ document.addEventListener('DOMContentLoaded', () => {
         youtubeUrl: document.getElementById('youtube-url'),
         btnAddYt: document.getElementById('btn-add-yt'),
         ytCountBadge: document.getElementById('yt-count-badge'),
+        btnClearYt: document.getElementById('btn-clear-yt'),
         ytVideosList: document.getElementById('yt-videos-list'),
         pdfDropzone: document.getElementById('pdf-dropzone'),
         pdfFileInput: document.getElementById('pdf-files'),
+        pdfCountBadge: document.getElementById('pdf-count-badge'),
+        btnClearPdf: document.getElementById('btn-clear-pdf'),
         fileList: document.getElementById('file-list'),
         instructionsInput: document.getElementById('instructions'),
         btnGenerate: document.getElementById('btn-generate'),
@@ -290,12 +293,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (count === 0) {
             elements.ytVideosList.classList.add('hidden');
             elements.ytCountBadge.classList.add('hidden');
+            if (elements.btnClearYt) elements.btnClearYt.classList.add('hidden');
             elements.ytVideosList.innerHTML = '';
             return;
         }
 
         elements.ytCountBadge.textContent = `${count} ${count === 1 ? 'video' : 'videos'}`;
         elements.ytCountBadge.classList.remove('hidden');
+        if (elements.btnClearYt) elements.btnClearYt.classList.remove('hidden');
         elements.ytVideosList.classList.remove('hidden');
 
         elements.ytVideosList.innerHTML = state.selectedVideos.map((vid, idx) => `
@@ -323,6 +328,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.selectedVideos.splice(idx, 1);
                 updateYtList();
             });
+        });
+    }
+
+    if (elements.btnClearYt) {
+        elements.btnClearYt.addEventListener('click', () => {
+            state.selectedVideos = [];
+            updateYtList();
+            showToast('Lista de videos vaciada.', 'info');
         });
     }
 
@@ -392,20 +405,29 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateFileList() {
-        if (state.selectedFiles.length === 0) {
+        const count = state.selectedFiles.length;
+        if (count === 0) {
             elements.fileList.classList.add('hidden');
+            if (elements.pdfCountBadge) elements.pdfCountBadge.classList.add('hidden');
+            if (elements.btnClearPdf) elements.btnClearPdf.classList.add('hidden');
             elements.fileList.innerHTML = '';
             return;
         }
 
+        if (elements.pdfCountBadge) {
+            elements.pdfCountBadge.textContent = `${count} ${count === 1 ? 'archivo' : 'archivos'}`;
+            elements.pdfCountBadge.classList.remove('hidden');
+        }
+        if (elements.btnClearPdf) elements.btnClearPdf.classList.remove('hidden');
         elements.fileList.classList.remove('hidden');
+
         elements.fileList.innerHTML = state.selectedFiles.map((file, idx) => `
             <div class="file-item">
                 <div class="file-name">
                     <i class="fa-solid fa-file-pdf"></i>
                     <span>${escapeHtml(file.name)} (${(file.size / (1024 * 1024)).toFixed(2)} MB)</span>
                 </div>
-                <button type="button" class="icon-btn remove-file-btn" data-idx="${idx}" title="Eliminar">
+                <button type="button" class="remove-item-btn remove-file-btn" data-idx="${idx}" title="Eliminar">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
@@ -417,6 +439,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.selectedFiles.splice(idx, 1);
                 updateFileList();
             });
+        });
+    }
+
+    if (elements.btnClearPdf) {
+        elements.btnClearPdf.addEventListener('click', () => {
+            state.selectedFiles = [];
+            if (elements.pdfFileInput) elements.pdfFileInput.value = '';
+            updateFileList();
+            showToast('Archivos PDF removidos.', 'info');
         });
     }
 
