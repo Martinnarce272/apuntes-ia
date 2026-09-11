@@ -20,11 +20,29 @@ if hasattr(sys.stdout, 'reconfigure'):
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
+from google.genai import types
+
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
 UPLOAD_FOLDER = Path(__file__).parent / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 app.config['UPLOAD_FOLDER'] = str(UPLOAD_FOLDER)
+
+@app.errorhandler(500)
+def handle_500(err):
+    """Ensure Flask never returns raw HTML 500 pages."""
+    return jsonify({
+        "success": False,
+        "error": "Ocurrió un error inesperado en el servidor al procesar la solicitud. Intenta nuevamente."
+    }), 500
+
+@app.errorhandler(413)
+def handle_413(err):
+    """Handle upload exceeding max content length."""
+    return jsonify({
+        "success": False,
+        "error": "El archivo PDF o contenido subido excede el límite máximo permitido de 50MB."
+    }), 413
 
 def robust_parse_json(text):
     """Robustly parse JSON strings from Gemini, handling unescaped LaTeX backslashes."""
@@ -602,8 +620,6 @@ def generate_notes():
         if u and u not in cleaned_urls:
             cleaned_urls.append(u)
 
-    from google.genai import types
-
     for idx, url in enumerate(cleaned_urls):
         video_id = extract_youtube_id(url)
         if not video_id:
@@ -796,16 +812,28 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
         except Exception:
             pass
 
-        if "401" in safe_msg or "UNAUTHENTICATED" in safe_msg or "API_KEY_SERVICE_BLOCKED" in safe_msg:
+        if "401" in safe_msg or "UNAUTHENTICATED" in safe_msg or "API_KEY_SERVICE_BLOCKED" in safe_msg or "API_KEY_INVALID" in safe_msg:
             return jsonify({
                 "success": False,
                 "is_auth_error": True,
-                "error": "Google rechazó la clave (401 UNAUTHENTICATED). Asegúrate de que tu clave esté activa y copiada correctamente desde https://aistudio.google.com/app/apikey."
+                "error": "Google rechazó la clave de API (no válida, bloqueada o revocada). Asegúrate de copiar tu clave activa desde https://aistudio.google.com/app/apikey."
             }), 401
+
+        if "429" in safe_msg or "RESOURCE_EXHAUSTED" in safe_msg:
+            return jsonify({
+                "success": False,
+                "error": "Se alcanzó el límite de solicitudes por minuto de la API gratuita de Gemini. Espera 1 minuto y vuelve a intentar, o carga tu propia clave en la barra superior."
+            }), 429
+
+        if "503" in safe_msg or "UNAVAILABLE" in safe_msg or "high demand" in safe_msg:
+            return jsonify({
+                "success": False,
+                "error": "Los servidores de Google Gemini están experimentando alta demanda momentánea. Por favor intenta nuevamente en unos segundos."
+            }), 503
 
         return jsonify({
             "success": False,
-            "error": f"Error en la llamada a la IA de Gemini: {safe_msg}"
+            "error": f"Error al procesar el apunte con la IA: {safe_msg}"
         }), 500
 
 if __name__ == '__main__':
