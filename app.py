@@ -211,13 +211,6 @@ def youtube_tracks():
 
 
 
-@app.route('/api/test-log', methods=['POST'])
-def test_log():
-    data = request.get_json(force=True, silent=True) or {}
-    with open('scratch/browser_result.json', 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
-    return jsonify({"ok": True})
-
 @app.route('/api/demo', methods=['GET'])
 def get_demo_notes():
     """Return a high-quality pre-generated study note for instant preview and testing."""

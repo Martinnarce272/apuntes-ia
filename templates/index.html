@@ -146,6 +146,25 @@
                             <!-- Selected files list -->
                             <div id="file-list" class="file-list hidden"></div>
                         </div>
+
+                        <!-- Manual Notes / Transcript Fallback Card -->
+                        <div class="glass-card source-card manual-text-card">
+                            <div class="card-header">
+                                <div class="card-icon" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">
+                                    <i class="fa-solid fa-align-left"></i>
+                                </div>
+                                <div class="card-header-info">
+                                    <div class="card-title-row">
+                                        <h3>Texto o Transcripción Manual</h3>
+                                        <span class="label-badge">Opcional</span>
+                                    </div>
+                                    <p>Pega apuntes de clase o texto copiado de YouTube ("Mostrar transcripción")</p>
+                                </div>
+                            </div>
+                            <div class="input-group" style="margin-top: 10px;">
+                                <textarea id="manual-text" rows="3" placeholder="Pega aquí transcripciones de audio, texto de diapositivas o apuntes de clase..." style="width: 100%; border-radius: 8px; resize: vertical; padding: 10px 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: var(--text-primary); font-family: inherit; font-size: 0.9rem; line-height: 1.4;"></textarea>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Right: Study Preferences & Action -->

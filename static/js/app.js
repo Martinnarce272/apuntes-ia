@@ -39,6 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
         pdfCountBadge: document.getElementById('pdf-count-badge'),
         btnClearPdf: document.getElementById('btn-clear-pdf'),
         fileList: document.getElementById('file-list'),
+        manualTextInput: document.getElementById('manual-text'),
         instructionsInput: document.getElementById('instructions'),
         btnGenerate: document.getElementById('btn-generate'),
 
@@ -753,13 +754,16 @@ REGLAS DE CONTENIDO:
             await processAndAddYouTubeUrls(pendingUrl);
         }
 
+        const manualText = (elements.manualTextInput?.value || '').trim();
         const hasVideos = state.selectedVideos.length > 0;
         const hasPdfs = state.selectedFiles.length > 0;
+        const hasManual = manualText.length > 0;
 
-        if (!hasVideos && !hasPdfs) {
-            showToast('Por favor agrega al menos un enlace de YouTube o sube un archivo PDF.', 'error');
+        if (!hasVideos && !hasPdfs && !hasManual) {
+            showToast('Por favor agrega al menos un enlace de YouTube, sube un archivo PDF o pega texto de estudio.', 'error');
             return;
         }
+
 
         if (typeof puter === 'undefined' || !puter.ai) {
             showToast('La librería Puter.js no está disponible. Comprueba tu conexión a internet.', 'error');
@@ -822,6 +826,9 @@ REGLAS DE CONTENIDO:
                 pdfResults.forEach((pr, i) => {
                     sourcesText += `\\n[Documento #${i + 1}: "${pr.filename}" (${pr.pages} páginas)]\\n${pr.text}\\n`;
                 });
+            }
+            if (manualText) {
+                sourcesText += `\\n=== APUNTES Y TRANSCRIPCIÓN MANUAL DEL ESTUDIANTE ===\\n${manualText}\\n`;
             }
 
             const selectedDepth = document.querySelector('input[name="depth"]:checked')?.value || 'completo';
