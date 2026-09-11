@@ -104,6 +104,16 @@ class TestApuntesIA(unittest.TestCase):
         chunk = next(res.response)
         self.assertGreater(len(chunk), 0)
 
+    def test_youtube_transcript_endpoint(self):
+        # Test direct transcript extraction without media download
+        res = self.client.get('/api/youtube-transcript?videoId=0XoS8EUrG3k')
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['success'])
+        self.assertIn('full_text', data)
+        self.assertGreater(len(data['full_text']), 100)
+        self.assertIn('timed_text', data)
+
 if __name__ == '__main__':
     unittest.main()
 

@@ -399,14 +399,40 @@ REGLAS DE CONTENIDO:
             }
         }
 
-        // 1. IF SUBTITLES EXIST: Download & parse XML timedtext directly (instant)
+        // 1. IF SUBTITLES EXIST: Try direct download
         if (tracks && tracks.length > 0) {
+            // Check if there is a direct backend API track
+            const apiTrack = tracks.find(t => t.is_api || (t.base_url && t.base_url.includes('/api/youtube-transcript')));
+            if (apiTrack && apiTrack.base_url) {
+                try {
+                    const res = await fetch(apiTrack.base_url);
+                    if (res.ok) {
+                        const tData = await res.json();
+                        if (tData.success && tData.full_text) {
+                            return {
+                                title: video.title || 'Video de YouTube',
+                                videoId: video.id,
+                                thumbnail: video.thumbnail,
+                                fullText: tData.full_text,
+                                timedText: tData.timed_text || tData.full_text,
+                                durationSeconds: 0,
+                                sourceType: 'youtube_transcript_api'
+                            };
+                        }
+                    }
+                } catch (apiErr) {
+                    console.warn('Error fetching transcript via backend apiTrack:', apiErr);
+                }
+            }
+
             const selectedTrack = tracks.find(t => 
-                t.language_code === 'es' || 
-                t.language_code.startsWith('es-') ||
-                (t.name && t.name.toLowerCase().includes('spanish')) ||
-                (t.name && t.name.toLowerCase().includes('español'))
-            ) || tracks[0];
+                !t.is_api && (
+                    t.language_code === 'es' || 
+                    t.language_code.startsWith('es-') ||
+                    (t.name && t.name.toLowerCase().includes('spanish')) ||
+                    (t.name && t.name.toLowerCase().includes('español'))
+                )
+            ) || tracks.find(t => !t.is_api);
 
             if (selectedTrack && selectedTrack.base_url) {
                 try {
@@ -429,19 +455,46 @@ REGLAS DE CONTENIDO:
                         }
                     }
                 } catch (fetchErr) {
-                    console.warn('Fallo al descargar subtítulos directos, procediendo con transcripción de audio por IA...', fetchErr);
+                    console.warn('Fallo al descargar subtítulos directos XML, intentando API de transcripciones...', fetchErr);
                 }
             }
         }
 
-        // 2. AUTOMATIC AUDIO FALLBACK: Video has no captions -> Download audio stream and transcribe with Puter.ai Speech-to-Text!
+        // 2. BACKEND TRANSCRIPT API FALLBACK: Retrieve direct subtitles without downloading media
         try {
-            elements.loadingStatusDesc.textContent = `Video sin subtítulos detectado. Descargando audio de "${video.title || 'video'}"...`;
+            elements.loadingStatusDesc.textContent = `Consultando transcripción de "${video.title || 'video'}"...`;
+            const tRes = await fetch(`/api/youtube-transcript?videoId=${video.id || encodeURIComponent(video.url)}`);
+            if (tRes.ok) {
+                const tData = await tRes.json();
+                if (tData.success && tData.full_text) {
+                    return {
+                        title: video.title || 'Video de YouTube',
+                        videoId: video.id,
+                        thumbnail: video.thumbnail,
+                        fullText: tData.full_text,
+                        timedText: tData.timed_text || tData.full_text,
+                        durationSeconds: 0,
+                        sourceType: 'youtube_transcript_api'
+                    };
+                }
+            }
+        } catch (tErr) {
+            console.warn('Backend transcript API not available, intentando extracción de audio...', tErr);
+        }
+
+        // 3. AUTOMATIC AUDIO FALLBACK: Only if no subtitles exist anywhere -> Stream audio + Speech-to-Text!
+        try {
+            elements.loadingStatusDesc.textContent = `Descargando audio de "${video.title || 'video'}" para transcripción por IA...`;
             console.log(`Descargando audio de YouTube para "${video.title || video.id}" para transcribir con IA...`);
             
             const audioRes = await fetch(`/api/youtube-audio?videoId=${video.id || encodeURIComponent(video.url)}`);
             if (!audioRes.ok) {
-                throw new Error(`Error ${audioRes.status} al descargar pista de audio`);
+                let errDetail = `Error HTTP ${audioRes.status}`;
+                try {
+                    const errJson = await audioRes.json();
+                    if (errJson.error) errDetail = errJson.error;
+                } catch (_) {}
+                throw new Error(errDetail);
             }
             const audioBlob = await audioRes.blob();
             if (!audioBlob || audioBlob.size < 500) {
@@ -476,7 +529,7 @@ REGLAS DE CONTENIDO:
             console.error('Error al transcribir audio del video:', audioErr);
             throw new YouTubeCaptionError(
                 'NO_CAPTIONS',
-                `No se pudo transcribir el audio de "${video.title || 'este video'}": ${audioErr.message || 'Error en el servicio de transcripción'}.`,
+                `No se pudo obtener la transcripción ni el audio de "${video.title || 'este video'}": ${audioErr.message || 'Error en el servicio de transcripción'}.`,
                 { video, originalError: audioErr }
             );
         }

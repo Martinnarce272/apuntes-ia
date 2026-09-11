@@ -2,9 +2,16 @@ import sys
 import os
 import re
 import json
+import logging
+import tempfile
+import base64
+import http.cookiejar
 import requests
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("ApuntesIA")
 
 # Ensure UTF-8 output encoding on Windows console
 if hasattr(sys.stdout, 'reconfigure'):
@@ -79,14 +86,111 @@ def get_youtube_metadata(video_id):
 
 import yt_dlp
 
+def get_youtube_cookiefile():
+    """Retrieve or materialize YouTube cookies from environment variable or file."""
+    cookie_path = os.environ.get('YOUTUBE_COOKIE_PATH', 'cookies.txt')
+    if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 10:
+        return cookie_path
+
+    b64_cookies = os.environ.get('YOUTUBE_COOKIES_BASE64')
+    if b64_cookies:
+        try:
+            decoded = base64.b64decode(b64_cookies.strip()).decode('utf-8', errors='ignore')
+            tmp_path = os.path.join(tempfile.gettempdir(), 'youtube_cookies.txt')
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                f.write(decoded)
+            return tmp_path
+        except Exception as e:
+            logger.warning(f"Error decoding YOUTUBE_COOKIES_BASE64: {e}")
+
+    raw_cookies = os.environ.get('YOUTUBE_COOKIES')
+    if raw_cookies and len(raw_cookies.strip()) > 20:
+        tmp_path = os.path.join(tempfile.gettempdir(), 'youtube_cookies.txt')
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            f.write(raw_cookies.strip())
+        return tmp_path
+
+    return None
+
+def get_youtube_transcript_api(video_id):
+    """Retrieve subtitles directly via youtube-transcript-api without downloading media."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept-Language': 'es-419,es;q=0.9,en;q=0.8'
+        })
+        cookie_file = get_youtube_cookiefile()
+        if cookie_file and os.path.exists(cookie_file):
+            try:
+                cj = http.cookiejar.MozillaCookieJar(cookie_file)
+                cj.load(ignore_discard=True, ignore_expires=True)
+                session.cookies = cj
+            except Exception as ce:
+                logger.warning(f"Could not load cookies into requests session: {ce}")
+
+        snippets = []
+        lang = 'es'
+        if hasattr(YouTubeTranscriptApi, 'list'):
+            api = YouTubeTranscriptApi(http_client=session)
+            tl = api.list(video_id)
+            try:
+                transcript_obj = tl.find_transcript(['es', 'es-419', 'es-ES', 'en', 'en-US'])
+            except Exception:
+                transcript_obj = next(iter(tl))
+            lang = getattr(transcript_obj, 'language_code', 'es')
+            fetched = transcript_obj.fetch()
+            snippets = [{'text': s.text, 'start': s.start, 'duration': s.duration} for s in fetched.snippets]
+        elif hasattr(YouTubeTranscriptApi, 'get_transcript'):
+            snippets = YouTubeTranscriptApi.get_transcript(video_id, languages=['es', 'es-419', 'en', 'en-US'])
+        
+        if not snippets:
+            return None
+
+        full_text = ' '.join([s['text'] for s in snippets if s.get('text')]).strip()
+        timed_snippets = []
+        for s in snippets:
+            text = s.get('text', '').strip()
+            if text:
+                mm = int(s.get('start', 0) // 60)
+                ss = int(s.get('start', 0) % 60)
+                timed_snippets.append(f"[{mm:02d}:{ss:02d}] {text}")
+        timed_text = '\n'.join(timed_snippets)
+
+        return {
+            "success": True,
+            "language": lang,
+            "full_text": full_text,
+            "timed_text": timed_text,
+            "snippets_count": len(snippets)
+        }
+    except Exception as e:
+        logger.warning(f"youtube-transcript-api check failed for {video_id}: {e}")
+        return None
+
 def get_youtube_video_data(video_id):
-    """Retrieve video metadata, subtitle tracks, and audio streaming info via yt-dlp."""
+    """Retrieve video metadata, subtitle tracks, and audio streaming info via yt-dlp with cookie & player fallback."""
+    cookie_file = get_youtube_cookiefile()
     ydl_opts = {
         'skip_download': True,
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': False
+        'extract_flat': False,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'mweb', 'web'],
+                'player_skip': ['webpage', 'configs']
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept-Language': 'es-419,es;q=0.9,en;q=0.8'
+        }
     }
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
+
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -99,7 +203,6 @@ def get_youtube_video_data(video_id):
             for lang_code in ['es', 'es-419', 'es-ES', 'es-US', 'en', 'en-US']:
                 track_list = subs.get(lang_code) or auto_subs.get(lang_code)
                 if track_list:
-                    # Prefer srv1 for clean XML text nodes
                     pref = next((s['url'] for s in track_list if s.get('ext') == 'srv1'), None)
                     if not pref:
                         pref = next((s['url'] for s in track_list if s.get('ext') in ['srv3', 'vtt']), track_list[0]['url'])
@@ -119,6 +222,18 @@ def get_youtube_video_data(video_id):
                         "language_code": lang_code,
                         "base_url": pref,
                         "is_auto": lang_code in auto_subs and lang_code not in subs
+                    })
+
+            # Check youtube-transcript-api as backup for caption_tracks if empty
+            if not caption_tracks:
+                t_data = get_youtube_transcript_api(video_id)
+                if t_data and t_data.get("full_text"):
+                    caption_tracks.append({
+                        "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
+                        "language_code": t_data.get('language', 'es'),
+                        "base_url": f"/api/youtube-transcript?videoId={video_id}",
+                        "is_auto": False,
+                        "is_api": True
                     })
             
             # Extract lightweight audio format for Speech-to-Text
@@ -146,6 +261,30 @@ def get_youtube_video_data(video_id):
                 "audio_ext": selected_audio.get('ext', 'm4a') if selected_audio else 'm4a'
             }, {"status": "ok"}
     except Exception as e:
+        logger.warning(f"yt-dlp extract failed for {video_id}: {e}")
+        # Even if yt-dlp failed, attempt direct subtitles via youtube-transcript-api!
+        t_data = get_youtube_transcript_api(video_id)
+        if t_data and t_data.get("full_text"):
+            meta = get_youtube_metadata(video_id)
+            return {
+                "title": meta.get("title", f"Video {video_id}"),
+                "author": meta.get("author", "YouTube"),
+                "thumbnail": meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
+                "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+                "caption_tracks": [{
+                    "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
+                    "language_code": t_data.get('language', 'es'),
+                    "base_url": f"/api/youtube-transcript?videoId={video_id}",
+                    "is_auto": False,
+                    "is_api": True
+                }],
+                "has_captions": True,
+                "has_audio": False,
+                "audio_url": None,
+                "audio_headers": {},
+                "audio_format_id": None,
+                "audio_ext": "m4a"
+            }, {"status": "ok_via_transcript_api"}
         return None, {"error": str(e)}
 
 def get_youtube_caption_tracks(video_id):
@@ -185,12 +324,24 @@ def youtube_preview():
         vdata["debug"] = debug_info
         return jsonify(vdata)
 
-    # Fallback to oEmbed if yt-dlp failed
+    # Fallback to oEmbed + youtube-transcript-api check
     meta = get_youtube_metadata(video_id)
+    t_data = get_youtube_transcript_api(video_id)
+    has_captions = t_data is not None and bool(t_data.get("full_text"))
+    caption_tracks = []
+    if has_captions:
+        caption_tracks.append({
+            "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
+            "language_code": t_data.get('language', 'es'),
+            "base_url": f"/api/youtube-transcript?videoId={video_id}",
+            "is_auto": False,
+            "is_api": True
+        })
+
     meta["video_id"] = video_id
     meta["success"] = True
-    meta["caption_tracks"] = []
-    meta["has_captions"] = False
+    meta["caption_tracks"] = caption_tracks
+    meta["has_captions"] = has_captions
     meta["has_audio"] = False
     meta["debug"] = debug_info
     return jsonify(meta)
@@ -223,16 +374,59 @@ def youtube_tracks():
         })
 
     meta = get_youtube_metadata(video_id)
+    t_data = get_youtube_transcript_api(video_id)
+    has_captions = t_data is not None and bool(t_data.get("full_text"))
+    caption_tracks = []
+    if has_captions:
+        caption_tracks.append({
+            "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
+            "language_code": t_data.get('language', 'es'),
+            "base_url": f"/api/youtube-transcript?videoId={video_id}",
+            "is_auto": False,
+            "is_api": True
+        })
+
     return jsonify({
         "success": True,
         "video_id": video_id,
         "title": meta.get("title", f"Video {video_id}"),
         "thumbnail": meta.get("thumbnail", ""),
-        "has_captions": False,
+        "has_captions": has_captions,
         "has_audio": False,
-        "caption_tracks": [],
+        "caption_tracks": caption_tracks,
         "debug": debug_info
     })
+
+@app.route('/api/youtube-transcript', methods=['GET', 'POST'])
+def youtube_transcript():
+    """Retrieve full transcript text of a YouTube video via youtube-transcript-api without downloading media."""
+    url = ''
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or request.form or {}
+        url = data.get('url') or data.get('videoId') or ''
+    else:
+        url = request.args.get('url') or request.args.get('videoId') or ''
+        
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        return jsonify({"success": False, "error": "ID o enlace de video no válido."}), 400
+
+    t_data = get_youtube_transcript_api(video_id)
+    if t_data and t_data.get("full_text"):
+        return jsonify({
+            "success": True,
+            "video_id": video_id,
+            "full_text": t_data["full_text"],
+            "timed_text": t_data["timed_text"],
+            "language": t_data.get("language", "es"),
+            "snippets_count": t_data.get("snippets_count", 0)
+        })
+
+    return jsonify({
+        "success": False,
+        "video_id": video_id,
+        "error": "No se encontraron subtítulos ni transcripciones para este video en YouTube."
+    }), 404
 
 @app.route('/api/youtube-audio', methods=['GET'])
 def youtube_audio():
@@ -243,7 +437,16 @@ def youtube_audio():
         
     vdata, debug_info = get_youtube_video_data(video_id)
     if not vdata or not vdata.get("audio_url"):
-        return jsonify({"success": False, "error": "No se pudo obtener la pista de audio de este video de YouTube.", "debug": debug_info}), 404
+        error_msg = (
+            "YouTube bloqueó temporalmente la extracción de audio desde el servidor (bot check / IP de datacenter). "
+            "Para solucionarlo, puedes configurar cookies de YouTube en la variable de entorno YOUTUBE_COOKIES en Render "
+            "o utilizar un video con subtítulos disponibles."
+        )
+        return jsonify({
+            "success": False, 
+            "error": error_msg, 
+            "debug": debug_info
+        }), 404
 
     audio_url = vdata["audio_url"]
     audio_headers = vdata.get("audio_headers", {})
@@ -254,8 +457,20 @@ def youtube_audio():
         # Stream audio up to ~24 MB (under Puter.js 25MB speech2txt limit)
         req_headers = dict(audio_headers)
         req_headers["Range"] = "bytes=0-24999999"
+        
+        # Load cookies if available
+        cookie_file = get_youtube_cookiefile()
+        cookies_dict = {}
+        if cookie_file and os.path.exists(cookie_file):
+            try:
+                cj = http.cookiejar.MozillaCookieJar(cookie_file)
+                cj.load(ignore_discard=True, ignore_expires=True)
+                cookies_dict = {c.name: c.value for c in cj}
+            except Exception:
+                pass
+
         try:
-            with requests.get(audio_url, headers=req_headers, stream=True, timeout=25) as r:
+            with requests.get(audio_url, headers=req_headers, cookies=cookies_dict, stream=True, timeout=25) as r:
                 if r.status_code in [200, 206]:
                     for chunk in r.iter_content(chunk_size=65536):
                         if chunk:
