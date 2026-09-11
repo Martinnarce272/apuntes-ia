@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
         activeTab: 'tab-notes',
         selectedVideos: [],
         selectedFiles: [],
+        selectedAudios: [],
         currentResult: null,
         flashcards: [],
         currentFlashcardIndex: 0,
@@ -34,6 +35,16 @@ document.addEventListener('DOMContentLoaded', () => {
         ytCountBadge: document.getElementById('yt-count-badge'),
         btnClearYt: document.getElementById('btn-clear-yt'),
         ytVideosList: document.getElementById('yt-videos-list'),
+        ytFallbackBanner: document.getElementById('yt-fallback-banner'),
+        btnFallbackAudio: document.getElementById('btn-fallback-audio'),
+        btnFallbackPdf: document.getElementById('btn-fallback-pdf'),
+        btnFallbackNotes: document.getElementById('btn-fallback-notes'),
+        audioCard: document.getElementById('audio-card'),
+        audioDropzone: document.getElementById('audio-dropzone'),
+        audioFileInput: document.getElementById('audio-files'),
+        audioCountBadge: document.getElementById('audio-count-badge'),
+        btnClearAudio: document.getElementById('btn-clear-audio'),
+        audioList: document.getElementById('audio-list'),
         pdfDropzone: document.getElementById('pdf-dropzone'),
         pdfFileInput: document.getElementById('pdf-files'),
         pdfCountBadge: document.getElementById('pdf-count-badge'),
@@ -211,6 +222,30 @@ REGLAS DE CONTENIDO:
         };
     }
 
+    class YouTubeCaptionError extends Error {
+        constructor(code, message, details = {}) {
+            super(message);
+            this.name = 'YouTubeCaptionError';
+            this.code = code; // 'NO_CAPTIONS' | 'NETWORK_CORS_ERROR' | 'EMPTY_TRANSCRIPT' | 'VIDEO_UNAVAILABLE'
+            this.details = details;
+        }
+    }
+
+    async function extractAudioTextInBrowser(file) {
+        if (typeof puter === 'undefined' || !puter.ai || !puter.ai.speech2txt) {
+            throw new Error('La función de transcripción de audio de Puter.js no está disponible.');
+        }
+        const res = await puter.ai.speech2txt(file);
+        const text = typeof res === 'string' ? res : (res?.text || res?.transcript || '');
+        if (!text || text.trim().length === 0) {
+            throw new Error(`No se pudo extraer texto de la grabación "${file.name}".`);
+        }
+        return {
+            filename: file.name,
+            text: text.trim()
+        };
+    }
+
     function parseYouTubeTranscriptXml(xmlText) {
         if (!xmlText) return { fullText: '', timedText: '', durationSeconds: 0, snippetCount: 0 };
 
@@ -361,11 +396,20 @@ REGLAS DE CONTENIDO:
                 }
             } catch (e) {
                 console.error('Error fetching tracks for video:', video.url, e);
+                throw new YouTubeCaptionError(
+                    'NETWORK_CORS_ERROR',
+                    'Fallo de conexión al consultar pistas de subtítulos en el servidor.',
+                    { video, originalError: e }
+                );
             }
         }
 
         if (!tracks || tracks.length === 0) {
-            throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+            throw new YouTubeCaptionError(
+                'NO_CAPTIONS',
+                'Este video no tiene subtítulos disponibles en YouTube.',
+                { video }
+            );
         }
 
         // Prioritize Spanish language tracks, otherwise fall back to first track
@@ -377,21 +421,57 @@ REGLAS DE CONTENIDO:
         ) || tracks[0];
 
         if (!selectedTrack || !selectedTrack.base_url) {
-            throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+            throw new YouTubeCaptionError(
+                'NO_CAPTIONS',
+                'Este video no tiene una pista de subtítulos con URL válida.',
+                { video }
+            );
         }
 
         // Fetch the transcript directly from the client browser!
-        // YouTube timedtext returns Access-Control-Allow-Origin: <Origin> so direct browser fetch succeeds without CORS errors.
-        const res = await fetch(selectedTrack.base_url);
+        let res;
+        try {
+            res = await fetch(selectedTrack.base_url);
+        } catch (fetchErr) {
+            console.error('Error de red o CORS al consultar timedtext:', fetchErr);
+            throw new YouTubeCaptionError(
+                'NETWORK_CORS_ERROR',
+                'No se pudo conectar con YouTube para descargar los subtítulos (posible bloqueo de red o CORS).',
+                { video, originalError: fetchErr }
+            );
+        }
+
         if (!res.ok) {
-            throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+            if (res.status === 404 || res.status === 410) {
+                throw new YouTubeCaptionError(
+                    'NO_CAPTIONS',
+                    'La pista de subtítulos ya no está disponible en los servidores de YouTube.',
+                    { video, status: res.status }
+                );
+            }
+            throw new YouTubeCaptionError(
+                'NETWORK_CORS_ERROR',
+                `Error HTTP ${res.status} al descargar subtítulos de YouTube.`,
+                { video, status: res.status }
+            );
         }
 
         const xmlText = await res.text();
-        const parsed = parseYouTubeTranscriptXml(xmlText);
+        if (!xmlText || !xmlText.trim()) {
+            throw new YouTubeCaptionError(
+                'EMPTY_TRANSCRIPT',
+                'El archivo de subtítulos devuelto por YouTube está vacío.',
+                { video }
+            );
+        }
 
+        const parsed = parseYouTubeTranscriptXml(xmlText);
         if (!parsed.fullText || parsed.snippetCount === 0) {
-            throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+            throw new YouTubeCaptionError(
+                'EMPTY_TRANSCRIPT',
+                'No se pudieron extraer líneas de texto legibles de los subtítulos.',
+                { video }
+            );
         }
 
         return {
@@ -575,6 +655,7 @@ REGLAS DE CONTENIDO:
             elements.ytCountBadge.classList.add('hidden');
             if (elements.btnClearYt) elements.btnClearYt.classList.add('hidden');
             elements.ytVideosList.innerHTML = '';
+            if (elements.ytFallbackBanner) elements.ytFallbackBanner.classList.add('hidden');
             return;
         }
 
@@ -582,6 +663,16 @@ REGLAS DE CONTENIDO:
         elements.ytCountBadge.classList.remove('hidden');
         if (elements.btnClearYt) elements.btnClearYt.classList.remove('hidden');
         elements.ytVideosList.classList.remove('hidden');
+
+        // Toggle fallback banner if any video is missing captions
+        const hasMissingCaptions = state.selectedVideos.some(v => v.has_captions === false);
+        if (elements.ytFallbackBanner) {
+            if (hasMissingCaptions) {
+                elements.ytFallbackBanner.classList.remove('hidden');
+            } else {
+                elements.ytFallbackBanner.classList.add('hidden');
+            }
+        }
 
         elements.ytVideosList.innerHTML = state.selectedVideos.map((vid, idx) => `
             <div class="yt-video-item" data-idx="${idx}">
@@ -593,8 +684,21 @@ REGLAS DE CONTENIDO:
                         <span>${escapeHtml(vid.author)}</span>
                         ${vid.has_captions !== false 
                             ? '<span class="badge-success"><i class="fa-solid fa-closed-captioning"></i> Subtítulos listos</span>' 
-                            : '<span class="badge-warning" style="background:rgba(239,68,68,0.2);color:#fca5a5;padding:2px 8px;border-radius:6px;font-size:0.75rem;"><i class="fa-solid fa-triangle-exclamation"></i> Sin subtítulos</span>'}
+                            : '<span class="badge-warning" style="background:rgba(245,158,11,0.2);color:#fde68a;padding:2px 8px;border-radius:6px;font-size:0.75rem;"><i class="fa-solid fa-triangle-exclamation"></i> Sin subtítulos</span>'}
                     </div>
+                    ${vid.has_captions === false ? `
+                        <div class="yt-video-rescue-actions">
+                            <button type="button" class="yt-video-rescue-btn rescue-audio-btn" data-idx="${idx}">
+                                <i class="fa-solid fa-microphone"></i> Subir audio
+                            </button>
+                            <button type="button" class="yt-video-rescue-btn rescue-pdf-btn" data-idx="${idx}">
+                                <i class="fa-solid fa-file-pdf"></i> Subir PDF
+                            </button>
+                            <button type="button" class="yt-video-rescue-btn rescue-notes-btn" data-idx="${idx}">
+                                <i class="fa-solid fa-align-left"></i> Pegar notas
+                            </button>
+                        </div>
+                    ` : ''}
                 </div>
                 <button type="button" class="remove-item-btn remove-yt-btn" data-idx="${idx}" title="Eliminar este video">
                     <i class="fa-solid fa-xmark"></i>
@@ -611,6 +715,29 @@ REGLAS DE CONTENIDO:
                 updateYtList();
             });
         });
+
+        // Wire rescue actions
+        document.querySelectorAll('.rescue-audio-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (elements.audioFileInput) elements.audioFileInput.click();
+            });
+        });
+        document.querySelectorAll('.rescue-pdf-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (elements.pdfFileInput) elements.pdfFileInput.click();
+            });
+        });
+        document.querySelectorAll('.rescue-notes-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (elements.manualTextInput) {
+                    elements.manualTextInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    elements.manualTextInput.focus();
+                }
+            });
+        });
     }
 
     if (elements.btnClearYt) {
@@ -618,6 +745,121 @@ REGLAS DE CONTENIDO:
             state.selectedVideos = [];
             updateYtList();
             showToast('Lista de videos vaciada.', 'info');
+        });
+    }
+
+    // Connect banner rescue buttons
+    if (elements.btnFallbackAudio) {
+        elements.btnFallbackAudio.addEventListener('click', () => {
+            if (elements.audioFileInput) elements.audioFileInput.click();
+        });
+    }
+    if (elements.btnFallbackPdf) {
+        elements.btnFallbackPdf.addEventListener('click', () => {
+            if (elements.pdfFileInput) elements.pdfFileInput.click();
+        });
+    }
+    if (elements.btnFallbackNotes) {
+        elements.btnFallbackNotes.addEventListener('click', () => {
+            if (elements.manualTextInput) {
+                elements.manualTextInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                elements.manualTextInput.focus();
+            }
+        });
+    }
+
+    // Audio Files Drag & Drop and Input
+    if (elements.audioDropzone && elements.audioFileInput) {
+        elements.audioDropzone.addEventListener('click', () => {
+            elements.audioFileInput.click();
+        });
+
+        elements.audioDropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            elements.audioDropzone.classList.add('dragover');
+        });
+
+        elements.audioDropzone.addEventListener('dragleave', () => {
+            elements.audioDropzone.classList.remove('dragover');
+        });
+
+        elements.audioDropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            elements.audioDropzone.classList.remove('dragover');
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                handleAudioFiles(e.dataTransfer.files);
+            }
+        });
+
+        elements.audioFileInput.addEventListener('change', () => {
+            if (elements.audioFileInput.files && elements.audioFileInput.files.length > 0) {
+                handleAudioFiles(elements.audioFileInput.files);
+            }
+        });
+    }
+
+    function handleAudioFiles(files) {
+        for (let file of files) {
+            const ext = file.name.split('.').pop().toLowerCase();
+            const isAudio = file.type.startsWith('audio/') || ['mp3', 'wav', 'm4a', 'ogg', 'aac', 'webm'].includes(ext);
+            if (isAudio) {
+                if (!state.selectedAudios.some(a => a.name === file.name && a.size === file.size)) {
+                    state.selectedAudios.push(file);
+                }
+            } else {
+                showToast(`El archivo "${file.name}" no es un formato de audio soportado (.mp3, .wav, .m4a).`, 'warning');
+            }
+        }
+        updateAudioList();
+    }
+
+    function updateAudioList() {
+        const count = state.selectedAudios.length;
+        if (count === 0) {
+            if (elements.audioList) {
+                elements.audioList.classList.add('hidden');
+                elements.audioList.innerHTML = '';
+            }
+            if (elements.audioCountBadge) elements.audioCountBadge.classList.add('hidden');
+            if (elements.btnClearAudio) elements.btnClearAudio.classList.add('hidden');
+            return;
+        }
+
+        if (elements.audioCountBadge) {
+            elements.audioCountBadge.textContent = `${count} ${count === 1 ? 'audio' : 'audios'}`;
+            elements.audioCountBadge.classList.remove('hidden');
+        }
+        if (elements.btnClearAudio) elements.btnClearAudio.classList.remove('hidden');
+        if (elements.audioList) {
+            elements.audioList.classList.remove('hidden');
+            elements.audioList.innerHTML = state.selectedAudios.map((file, idx) => `
+                <div class="file-item">
+                    <div class="file-name">
+                        <i class="fa-solid fa-file-audio" style="color: #34d399;"></i>
+                        <span>${escapeHtml(file.name)} (${(file.size / (1024 * 1024)).toFixed(2)} MB)</span>
+                    </div>
+                    <button type="button" class="remove-item-btn remove-audio-btn" data-idx="${idx}" title="Eliminar">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            `).join('');
+
+            document.querySelectorAll('.remove-audio-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const idx = parseInt(btn.getAttribute('data-idx'));
+                    state.selectedAudios.splice(idx, 1);
+                    updateAudioList();
+                });
+            });
+        }
+    }
+
+    if (elements.btnClearAudio) {
+        elements.btnClearAudio.addEventListener('click', () => {
+            state.selectedAudios = [];
+            if (elements.audioFileInput) elements.audioFileInput.value = '';
+            updateAudioList();
+            showToast('Archivos de audio removidos.', 'info');
         });
     }
 
@@ -757,18 +999,20 @@ REGLAS DE CONTENIDO:
         const manualText = (elements.manualTextInput?.value || '').trim();
         const hasVideos = state.selectedVideos.length > 0;
         const hasPdfs = state.selectedFiles.length > 0;
+        const hasAudios = (state.selectedAudios && state.selectedAudios.length > 0);
         const hasManual = manualText.length > 0;
 
-        if (!hasVideos && !hasPdfs && !hasManual) {
-            showToast('Por favor agrega al menos un enlace de YouTube, sube un archivo PDF o pega texto de estudio.', 'error');
+        if (!hasVideos && !hasPdfs && !hasAudios && !hasManual) {
+            showToast('Por favor agrega un enlace de YouTube, sube un PDF, un audio o pega texto de estudio.', 'error');
             return;
         }
-
 
         if (typeof puter === 'undefined' || !puter.ai) {
             showToast('La librería Puter.js no está disponible. Comprueba tu conexión a internet.', 'error');
             return;
         }
+
+        if (elements.btnGenerate) elements.btnGenerate.disabled = true;
 
         // Switch to loading view
         switchView('loading');
@@ -779,7 +1023,7 @@ REGLAS DE CONTENIDO:
         elements.step2.className = 'step-item';
         elements.step3.className = 'step-item';
         elements.loadingStatusTitle.textContent = 'Extrayendo contenido de las fuentes...';
-        elements.loadingStatusDesc.textContent = 'Procesando PDFs localmente en tu navegador y descargando transcripciones de video.';
+        elements.loadingStatusDesc.textContent = 'Procesando materiales en tu navegador...';
 
         try {
             // Extract PDFs locally in browser with pdf.js
@@ -794,16 +1038,53 @@ REGLAS DE CONTENIDO:
                 }
             }
 
-            // Fetch YouTube transcripts from lightweight backend
-            const videoResults = [];
-            for (const vid of state.selectedVideos) {
-                elements.loadingStatusDesc.textContent = `Descargando subtítulos de "${vid.title || 'video'}"...`;
-                const res = await fetchYouTubeTranscript(vid);
-                videoResults.push(res);
+            // Transcribe audio files in browser with puter.ai.speech2txt
+            const audioResults = [];
+            if (state.selectedAudios && state.selectedAudios.length > 0) {
+                for (const file of state.selectedAudios) {
+                    elements.loadingStatusDesc.textContent = `Transcribiendo audio "${file.name}" con IA...`;
+                    try {
+                        const res = await extractAudioTextInBrowser(file);
+                        audioResults.push(res);
+                    } catch (audioErr) {
+                        console.warn(`Fallo al transcribir audio ${file.name}:`, audioErr);
+                        showToast(`No se pudo transcribir "${file.name}": ${audioErr.message}`, 'warning');
+                    }
+                }
             }
 
-            if (pdfResults.length === 0 && videoResults.length === 0) {
-                throw new Error('No se pudo extraer texto ni de los PDFs ni de los videos seleccionados. Asegúrate de que el PDF contenga texto seleccionable o el video tenga subtítulos activados.');
+            // Fetch YouTube transcripts with graceful fallback
+            const videoResults = [];
+            const skippedVideos = [];
+            for (const vid of state.selectedVideos) {
+                elements.loadingStatusDesc.textContent = `Descargando subtítulos de "${vid.title || 'video'}"...`;
+                try {
+                    const res = await fetchYouTubeTranscript(vid);
+                    videoResults.push(res);
+                } catch (vidErr) {
+                    console.warn(`No se pudo extraer subtítulos de "${vid.title || vid.url}":`, vidErr);
+                    skippedVideos.push({ video: vid, error: vidErr });
+                }
+            }
+
+            const totalUsableSources = videoResults.length + pdfResults.length + audioResults.length + (manualText ? 1 : 0);
+
+            // If absolutely NO sources yielded usable text:
+            if (totalUsableSources === 0) {
+                if (skippedVideos.length > 0) {
+                    const firstErr = skippedVideos[0].error;
+                    if (firstErr instanceof YouTubeCaptionError && firstErr.code === 'NETWORK_CORS_ERROR') {
+                        throw new Error('Hubo un problema de red o CORS al consultar los subtítulos en tu navegador. Puedes subir el audio o PDF del tema.');
+                    }
+                    throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+                }
+                throw new Error('No se pudo extraer texto ni de los documentos, ni de los audios, ni de los videos seleccionados.');
+            }
+
+            // If some videos lacked captions but we have other valid sources:
+            if (skippedVideos.length > 0 && totalUsableSources > 0) {
+                const names = skippedVideos.map(s => `"${s.video.title || 'Video'}"`).join(', ');
+                showToast(`Se omitió ${names} (sin subtítulos) y se continuó generando el apunte con el resto de las fuentes disponibles.`, 'info');
             }
 
             // Progress stage 2: AI Call with Puter.js
@@ -825,6 +1106,12 @@ REGLAS DE CONTENIDO:
                 sourcesText += `\\n=== CONTENIDO DE DOCUMENTOS PDF (EXTRAÍDOS EN EL CLIENTE) ===\\n`;
                 pdfResults.forEach((pr, i) => {
                     sourcesText += `\\n[Documento #${i + 1}: "${pr.filename}" (${pr.pages} páginas)]\\n${pr.text}\\n`;
+                });
+            }
+            if (audioResults.length > 0) {
+                sourcesText += `\\n=== TRANSCRIPCIONES DE AUDIOS Y CLASES GRABADAS ===\\n`;
+                audioResults.forEach((ar, i) => {
+                    sourcesText += `\\n[Audio #${i + 1}: "${ar.filename}"]\\n${ar.text}\\n`;
                 });
             }
             if (manualText) {
@@ -935,6 +1222,12 @@ REGLAS DE CONTENIDO:
                     pages: p.pages
                 });
             });
+            audioResults.forEach(a => {
+                parsed.sources.push({
+                    type: 'audio',
+                    filename: a.filename
+                });
+            });
 
             elements.progressBar.style.width = '100%';
 
@@ -952,6 +1245,9 @@ REGLAS DE CONTENIDO:
             } else {
                 showToast(err.message || 'Error al generar el apunte. Intenta nuevamente.', 'error');
             }
+        } finally {
+            if (progressInterval) clearInterval(progressInterval);
+            if (elements.btnGenerate) elements.btnGenerate.disabled = false;
         }
     });
 

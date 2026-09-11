@@ -114,6 +114,59 @@
                             <div id="yt-videos-list" class="yt-videos-list hidden">
                                 <!-- Populated dynamically with video cards -->
                             </div>
+
+                            <!-- Non-blocking fallback banner when a video has no captions -->
+                            <div id="yt-fallback-banner" class="yt-fallback-banner hidden">
+                                <div class="fallback-banner-header">
+                                    <i class="fa-solid fa-triangle-exclamation" style="color: #f59e0b; font-size: 1.2rem; flex-shrink: 0; margin-top: 2px;"></i>
+                                    <div>
+                                        <h4 style="margin: 0; font-size: 0.92rem; font-weight: 600; color: #fde68a;">Este video no tiene subtítulos disponibles en YouTube</h4>
+                                        <p style="margin: 3px 0 0; font-size: 0.82rem; color: #cbd5e1; line-height: 1.4;">Puedes continuar generando tu apunte subiendo el audio de la clase, el PDF del tema o pegando notas de clase.</p>
+                                    </div>
+                                </div>
+                                <div class="fallback-banner-actions">
+                                    <button type="button" id="btn-fallback-audio" class="btn-fallback-chip">
+                                        <i class="fa-solid fa-microphone-lines"></i> Subir Audio (.mp3)
+                                    </button>
+                                    <button type="button" id="btn-fallback-pdf" class="btn-fallback-chip">
+                                        <i class="fa-solid fa-file-pdf"></i> Subir PDF
+                                    </button>
+                                    <button type="button" id="btn-fallback-notes" class="btn-fallback-chip">
+                                        <i class="fa-solid fa-align-left"></i> Pegar Notas
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Audio / Lecture Recording Card -->
+                        <div class="glass-card source-card audio-source-card" id="audio-card">
+                            <div class="card-header">
+                                <div class="card-icon" style="background: rgba(16, 185, 129, 0.15); color: #34d399; width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">
+                                    <i class="fa-solid fa-microphone-lines"></i>
+                                </div>
+                                <div class="card-header-info">
+                                    <div class="card-title-row">
+                                        <h3>Grabación de Audio / Clase</h3>
+                                        <div class="card-header-actions">
+                                            <span id="audio-count-badge" class="badge-count hidden">0 audios</span>
+                                            <button type="button" id="btn-clear-audio" class="btn-clear-all hidden" title="Quitar audios">
+                                                <i class="fa-solid fa-trash-can"></i> Limpiar
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <p>Sube notas de voz o audios (.mp3, .wav, .m4a) con transcripción por IA</p>
+                                </div>
+                            </div>
+
+                            <div class="dropzone" id="audio-dropzone">
+                                <input type="file" id="audio-files" name="audioFiles" accept="audio/*,.mp3,.wav,.m4a,.ogg,.aac,.webm" multiple hidden>
+                                <i class="fa-solid fa-file-audio drop-icon" style="color: #34d399;"></i>
+                                <p class="drop-title">Arrastra tus grabaciones de audio aquí</p>
+                                <p class="drop-hint">o haz clic para explorar (.mp3, .wav, .m4a)</p>
+                            </div>
+
+                            <!-- Selected audio files list -->
+                            <div id="audio-list" class="file-list hidden"></div>
                         </div>
 
                         <!-- PDF Upload Card -->

@@ -87,6 +87,15 @@ class TestApuntesIA(unittest.TestCase):
         self.assertGreater(len(data['caption_tracks']), 0)
         self.assertIn('base_url', data['caption_tracks'][0])
 
+    def test_youtube_video_without_captions_detection(self):
+        # MejbOFk7H6U is a video without any captions
+        res = self.client.get('/api/youtube-tracks?url=https://www.youtube.com/watch?v=MejbOFk7H6U')
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['success'])
+        self.assertFalse(data['has_captions'])
+        self.assertEqual(len(data['caption_tracks']), 0)
+
 if __name__ == '__main__':
     unittest.main()
 
