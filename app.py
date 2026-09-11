@@ -73,13 +73,8 @@ def robust_parse_json(text):
     fixed2 = re.sub(r'\\(?![/"\\])', r'\\\\', text)
     return json.loads(fixed2, strict=False)
 
-import base64
-
-# Built-in free Gemini key buffer so that the application works seamlessly for everyone without asking for API keys
-_DEFAULT_KEY_BUF = b'QVEuQWI4Uk42TExfNlgxWEVtcFhkaWVvZnNteUdsdXBLVU5tRDlRWktsMno3TERELVd1YWc='
-
 def get_api_key(request_data=None):
-    """Retrieve Gemini API key from request, environment, or built-in default free tier key."""
+    """Retrieve Gemini API key from request, headers, or environment."""
     if request_data and request_data.get('apiKey'):
         k = request_data.get('apiKey').strip()
         if k:
@@ -93,10 +88,7 @@ def get_api_key(request_data=None):
     if env_key:
         return env_key.strip()
         
-    try:
-        return base64.b64decode(_DEFAULT_KEY_BUF).decode('utf-8')
-    except Exception:
-        return None
+    return None
 
 def extract_youtube_id(url_or_id):
     """Extract YouTube video ID from various URL patterns or direct ID."""
@@ -548,7 +540,15 @@ def generate_notes():
     if not api_key:
         return jsonify({
             "success": False, 
-            "error": "Se requiere una clave de API de Gemini (GEMINI_API_KEY). Puedes ingresarla en el menú de configuración de la app o guardarla en el archivo .env."
+            "is_auth_error": True,
+            "error": "Se requiere una clave de Google Gemini para procesar el apunte. Toca el botón 'Clave Gemini' en la barra superior para ingresarla (es 100% gratuita en aistudio.google.com/app/apikey y empieza con 'AIzaSy')."
+        }), 400
+
+    if api_key.startswith("AQ."):
+        return jsonify({
+            "success": False,
+            "is_auth_error": True,
+            "error": "La clave ingresada (que empieza con 'AQ.') no es una clave válida de Gemini y fue bloqueada por Google (API_KEY_SERVICE_BLOCKED). Tu clave oficial gratuita de Gemini la obtienes en https://aistudio.google.com/app/apikey (siempre empieza con 'AIzaSy')."
         }), 400
 
     youtube_url = request.form.get('youtubeUrl', '').strip()
@@ -765,6 +765,14 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
             print(f"Error calling Gemini API: {safe_msg}")
         except Exception:
             pass
+
+        if "401" in safe_msg or "UNAUTHENTICATED" in safe_msg or "API_KEY_SERVICE_BLOCKED" in safe_msg:
+            return jsonify({
+                "success": False,
+                "is_auth_error": True,
+                "error": "Google rechazó la clave (401 UNAUTHENTICATED: API_KEY_SERVICE_BLOCKED). Tu clave oficial 100% gratuita de Gemini la creas en https://aistudio.google.com/app/apikey (siempre empieza con 'AIzaSy')."
+            }), 401
+
         return jsonify({
             "success": False,
             "error": f"Error en la llamada a la IA de Gemini: {safe_msg}"

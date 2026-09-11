@@ -122,23 +122,27 @@ document.addEventListener('DOMContentLoaded', () => {
     // 1. App Initialization & API Key
     // --------------------------------------------------------------------------
     async function checkStatus() {
-        try {
-            const res = await fetch('/api/status');
-            const data = await res.json();
+        const localKey = localStorage.getItem('gemini_api_key');
+        if (localKey && localKey.startsWith('AIzaSy')) {
             state.hasApiKey = true;
-            updateKeyIndicator();
-        } catch (e) {
-            console.error('Error checking status:', e);
-            state.hasApiKey = true;
+        } else {
+            state.hasApiKey = false;
         }
+        updateKeyIndicator();
     }
 
     function updateKeyIndicator() {
-        if (elements.keyIndicator) elements.keyIndicator.classList.add('active');
-        if (elements.keyStatusText) elements.keyStatusText.textContent = 'IA Gratuita Lista';
+        const localKey = localStorage.getItem('gemini_api_key');
+        if (localKey && localKey.startsWith('AIzaSy')) {
+            if (elements.keyIndicator) elements.keyIndicator.classList.add('active');
+            if (elements.keyStatusText) elements.keyStatusText.textContent = 'Clave Lista';
+        } else {
+            if (elements.keyIndicator) elements.keyIndicator.classList.remove('active');
+            if (elements.keyStatusText) elements.keyStatusText.textContent = 'Clave Gemini';
+        }
     }
 
-    // API Key Modal Handlers (optional)
+    // API Key Modal Handlers
     if (elements.btnApiKey) {
         elements.btnApiKey.addEventListener('click', () => {
             if (elements.keyMessageBox) elements.keyMessageBox.className = 'message-box hidden';
@@ -169,31 +173,35 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.btnSaveKey.addEventListener('click', async () => {
         const key = elements.inputApiKey.value.trim();
         if (!key) {
-            showKeyMessage('Por favor ingresa una clave válida.', 'error');
+            showKeyMessage('Por favor pega tu clave de Gemini.', 'error');
             return;
         }
 
+        if (key.startsWith('AQ.')) {
+            showKeyMessage("Esta clave empieza con 'AQ.' y fue bloqueada por Google (API_KEY_SERVICE_BLOCKED). Tu clave gratuita de Gemini debe empezar con 'AIzaSy'. Presiona el botón violeta de arriba para abrir Google AI Studio.", 'error');
+            return;
+        }
+
+        localStorage.setItem('gemini_api_key', key);
+        state.hasApiKey = true;
+        updateKeyIndicator();
+        showKeyMessage('¡Clave oficial guardada con éxito en tu dispositivo!', 'success');
+
         try {
-            const res = await fetch('/api/save-key', {
+            await fetch('/api/save-key', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ apiKey: key })
             });
-            const data = await res.json();
-            if (data.success) {
-                state.hasApiKey = true;
-                updateKeyIndicator();
-                showKeyMessage('¡Clave guardada con éxito!', 'success');
-                setTimeout(() => {
-                    elements.modalApiKey.classList.add('hidden');
-                    elements.inputApiKey.value = '';
-                }, 1000);
-            } else {
-                showKeyMessage(data.error || 'Error al guardar la clave.', 'error');
-            }
         } catch (e) {
-            showKeyMessage('Error de conexión al guardar la clave.', 'error');
+            // Local storage is enough
         }
+
+        setTimeout(() => {
+            elements.modalApiKey.classList.add('hidden');
+            elements.inputApiKey.value = '';
+            showToast('Clave de Gemini configurada con éxito.', 'success');
+        }, 1200);
     });
 
     function showKeyMessage(msg, type) {
@@ -523,6 +531,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!data.success) {
                 switchView('input');
                 showToast(data.error || 'Error al generar el apunte.', 'error');
+                if (data.is_auth_error && elements.modalApiKey) {
+                    elements.modalApiKey.classList.remove('hidden');
+                    showKeyMessage(data.error, 'error');
+                }
                 return;
             }
 
