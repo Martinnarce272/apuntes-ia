@@ -53,31 +53,40 @@ class TestApuntesIA(unittest.TestCase):
             self.assertEqual(res.status_code, 200)
             data = json.loads(res.data)
             self.assertTrue(data['success'])
-    def test_youtube_transcript_missing_url(self):
-        res = self.client.get('/api/youtube-transcript')
+    def test_youtube_preview_has_caption_tracks(self):
+        res = self.client.post('/api/youtube-preview', json={'url': 'https://www.youtube.com/watch?v=0XoS8EUrG3k'})
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['success'])
+        self.assertIn('caption_tracks', data)
+        self.assertIn('has_captions', data)
+        self.assertTrue(data['has_captions'])
+        self.assertGreater(len(data['caption_tracks']), 0)
+        self.assertIn('base_url', data['caption_tracks'][0])
+
+    def test_youtube_tracks_missing_url(self):
+        res = self.client.get('/api/youtube-tracks')
         self.assertEqual(res.status_code, 400)
         data = json.loads(res.data)
         self.assertFalse(data['success'])
         self.assertIn('error', data)
 
-    def test_youtube_transcript_invalid_url(self):
-        res = self.client.post('/api/youtube-transcript', json={'url': 'invalid-url-here'})
+    def test_youtube_tracks_invalid_url(self):
+        res = self.client.post('/api/youtube-tracks', json={'url': 'invalid-url-here'})
         self.assertEqual(res.status_code, 400)
         data = json.loads(res.data)
         self.assertFalse(data['success'])
         self.assertIn('error', data)
 
-    def test_youtube_transcript_endpoint_structure(self):
-        res = self.client.get('/api/youtube-transcript?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ')
-        self.assertIn(res.status_code, [200, 400])
+    def test_youtube_tracks_valid_video(self):
+        res = self.client.get('/api/youtube-tracks?url=https://www.youtube.com/watch?v=0XoS8EUrG3k')
+        self.assertEqual(res.status_code, 200)
         data = json.loads(res.data)
-        if res.status_code == 200:
-            self.assertTrue(data['success'])
-            self.assertIn('full_text', data)
-            self.assertIn('title', data)
-        else:
-            self.assertFalse(data['success'])
-            self.assertIn('error', data)
+        self.assertTrue(data['success'])
+        self.assertTrue(data['has_captions'])
+        self.assertGreater(len(data['caption_tracks']), 0)
+        self.assertIn('base_url', data['caption_tracks'][0])
 
 if __name__ == '__main__':
     unittest.main()
+

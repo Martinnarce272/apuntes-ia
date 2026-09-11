@@ -210,21 +210,199 @@ REGLAS DE CONTENIDO:
         };
     }
 
-    async function fetchYouTubeTranscript(video) {
-        const resp = await fetch(`/api/youtube-transcript?url=${encodeURIComponent(video.url)}`);
-        const data = await resp.json();
-        if (!data.success) {
-            throw new Error(data.error || `No se pudo obtener la transcripción de ${video.title || video.url}`);
+    function parseYouTubeTranscriptXml(xmlText) {
+        if (!xmlText) return { fullText: '', timedText: '', durationSeconds: 0, snippetCount: 0 };
+
+        function decodeEntities(str) {
+            return str
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'")
+                .replace(/&#x27;/g, "'")
+                .replace(/\n/g, ' ')
+                .trim();
         }
+
+        const snippets = [];
+        const fullTextPieces = [];
+        let maxSeconds = 0;
+
+        // Try standard browser DOMParser first
+        try {
+            if (typeof window !== 'undefined' && window.DOMParser) {
+                const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+                
+                // Format 1 (<text start="0.0" dur="2.0">Hello</text>)
+                const textNodes = doc.querySelectorAll('text');
+                if (textNodes && textNodes.length > 0) {
+                    textNodes.forEach(node => {
+                        const start = parseFloat(node.getAttribute('start')) || 0;
+                        const text = decodeEntities(node.textContent || '');
+                        if (text) {
+                            if (start > maxSeconds) maxSeconds = start;
+                            const mm = String(Math.floor(start / 60)).padStart(2, '0');
+                            const ss = String(Math.floor(start % 60)).padStart(2, '0');
+                            snippets.push(`[${mm}:${ss}] ${text}`);
+                            fullTextPieces.push(text);
+                        }
+                    });
+                    if (fullTextPieces.length > 0) {
+                        return {
+                            fullText: fullTextPieces.join(' '),
+                            timedText: snippets.join('\n'),
+                            durationSeconds: Math.ceil(maxSeconds),
+                            snippetCount: snippets.length
+                        };
+                    }
+                }
+
+                // Format 3 (ASR <p t="13900" d="5780"><s>bueno</s><s> buenas</s></p>)
+                const pNodes = doc.querySelectorAll('p');
+                if (pNodes && pNodes.length > 0) {
+                    pNodes.forEach(node => {
+                        const tMs = parseInt(node.getAttribute('t'), 10) || 0;
+                        const startSec = tMs / 1000;
+                        const sNodes = node.querySelectorAll('s');
+                        let segText = '';
+                        if (sNodes && sNodes.length > 0) {
+                            segText = Array.from(sNodes).map(s => s.textContent || '').join('');
+                        } else {
+                            segText = node.textContent || '';
+                        }
+                        segText = decodeEntities(segText);
+                        if (segText) {
+                            if (startSec > maxSeconds) maxSeconds = startSec;
+                            const mm = String(Math.floor(startSec / 60)).padStart(2, '0');
+                            const ss = String(Math.floor(startSec % 60)).padStart(2, '0');
+                            snippets.push(`[${mm}:${ss}] ${segText}`);
+                            fullTextPieces.push(segText);
+                        }
+                    });
+                    if (fullTextPieces.length > 0) {
+                        return {
+                            fullText: fullTextPieces.join(' '),
+                            timedText: snippets.join('\n'),
+                            durationSeconds: Math.ceil(maxSeconds),
+                            snippetCount: snippets.length
+                        };
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('DOMParser fallback to Regex parser:', e);
+        }
+
+        // Regex fallback
+        const reText = /<text start="([^"]*)" dur="([^"]*)">([\s\S]*?)<\/text>/g;
+        const reP = /<p t="(\d+)" d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+        const reS = /<s[^>]*>([\s\S]*?)<\/s>/g;
+
+        let match;
+        let format1Found = false;
+        while ((match = reText.exec(xmlText)) !== null) {
+            format1Found = true;
+            const startSec = parseFloat(match[1]) || 0;
+            const text = decodeEntities(match[3].replace(/<[^>]+>/g, ''));
+            if (text) {
+                if (startSec > maxSeconds) maxSeconds = startSec;
+                const mm = String(Math.floor(startSec / 60)).padStart(2, '0');
+                const ss = String(Math.floor(startSec % 60)).padStart(2, '0');
+                snippets.push(`[${mm}:${ss}] ${text}`);
+                fullTextPieces.push(text);
+            }
+        }
+
+        if (!format1Found) {
+            while ((match = reP.exec(xmlText)) !== null) {
+                const startMs = parseInt(match[1], 10) || 0;
+                const startSec = startMs / 1000;
+                const inner = match[3];
+                let segmentText = '';
+
+                const sMatches = [...inner.matchAll(reS)];
+                if (sMatches.length > 0) {
+                    segmentText = sMatches.map(m => m[1]).join('');
+                } else {
+                    segmentText = inner.replace(/<[^>]+>/g, '');
+                }
+                segmentText = decodeEntities(segmentText);
+
+                if (segmentText) {
+                    if (startSec > maxSeconds) maxSeconds = startSec;
+                    const mm = String(Math.floor(startSec / 60)).padStart(2, '0');
+                    const ss = String(Math.floor(startSec % 60)).padStart(2, '0');
+                    snippets.push(`[${mm}:${ss}] ${segmentText}`);
+                    fullTextPieces.push(segmentText);
+                }
+            }
+        }
+
         return {
-            title: data.title || video.title || 'Video de YouTube',
-            videoId: data.video_id,
-            thumbnail: data.thumbnail,
-            fullText: data.full_text || '',
-            timedText: data.timed_text || '',
-            durationSeconds: data.duration_seconds || 0
+            fullText: fullTextPieces.join(' '),
+            timedText: snippets.join('\n'),
+            durationSeconds: Math.ceil(maxSeconds),
+            snippetCount: snippets.length
         };
     }
+
+    async function fetchYouTubeTranscript(video) {
+        let tracks = video.caption_tracks || [];
+
+        // If tracks were not loaded during preview, fetch them now
+        if (!tracks || tracks.length === 0) {
+            try {
+                const resp = await fetch(`/api/youtube-tracks?videoId=${video.id || encodeURIComponent(video.url)}`);
+                const data = await resp.json();
+                if (data.success && data.caption_tracks) {
+                    tracks = data.caption_tracks;
+                }
+            } catch (e) {
+                console.error('Error fetching tracks for video:', video.url, e);
+            }
+        }
+
+        if (!tracks || tracks.length === 0) {
+            throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+        }
+
+        // Prioritize Spanish language tracks, otherwise fall back to first track
+        const selectedTrack = tracks.find(t => 
+            t.language_code === 'es' || 
+            t.language_code.startsWith('es-') ||
+            (t.name && t.name.toLowerCase().includes('spanish')) ||
+            (t.name && t.name.toLowerCase().includes('español'))
+        ) || tracks[0];
+
+        if (!selectedTrack || !selectedTrack.base_url) {
+            throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+        }
+
+        // Fetch the transcript directly from the client browser!
+        // YouTube timedtext returns Access-Control-Allow-Origin: <Origin> so direct browser fetch succeeds without CORS errors.
+        const res = await fetch(selectedTrack.base_url);
+        if (!res.ok) {
+            throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+        }
+
+        const xmlText = await res.text();
+        const parsed = parseYouTubeTranscriptXml(xmlText);
+
+        if (!parsed.fullText || parsed.snippetCount === 0) {
+            throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+        }
+
+        return {
+            title: video.title || 'Video de YouTube',
+            videoId: video.id,
+            thumbnail: video.thumbnail,
+            fullText: parsed.fullText,
+            timedText: parsed.timedText,
+            durationSeconds: parsed.durationSeconds
+        };
+    }
+
 
     function extractTextFromPuterResponse(res) {
         if (!res) return '';
@@ -366,9 +544,14 @@ REGLAS DE CONTENIDO:
                         title: data.title,
                         author: data.author,
                         thumbnail: data.thumbnail,
-                        fallback_thumbnail: data.fallback_thumbnail
+                        fallback_thumbnail: data.fallback_thumbnail,
+                        has_captions: data.has_captions,
+                        caption_tracks: data.caption_tracks || []
                     });
                     addedCount++;
+                    if (data.has_captions === false) {
+                        showToast(`El video "${data.title || rawUrl}" no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.`, 'warning');
+                    }
                 } else {
                     showToast(`No se pudo verificar el video "${rawUrl}": ${data.error || 'Enlace inválido'}`, 'warning');
                 }
@@ -407,7 +590,9 @@ REGLAS DE CONTENIDO:
                     <div class="yt-video-meta">
                         <span class="badge-order">Parte #${idx + 1}</span>
                         <span>${escapeHtml(vid.author)}</span>
-                        <span class="badge-success"><i class="fa-solid fa-check"></i> Listo</span>
+                        ${vid.has_captions !== false 
+                            ? '<span class="badge-success"><i class="fa-solid fa-closed-captioning"></i> Subtítulos listos</span>' 
+                            : '<span class="badge-warning" style="background:rgba(239,68,68,0.2);color:#fca5a5;padding:2px 8px;border-radius:6px;font-size:0.75rem;"><i class="fa-solid fa-triangle-exclamation"></i> Sin subtítulos</span>'}
                     </div>
                 </div>
                 <button type="button" class="remove-item-btn remove-yt-btn" data-idx="${idx}" title="Eliminar este video">

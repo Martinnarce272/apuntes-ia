@@ -77,115 +77,36 @@ def get_youtube_metadata(video_id):
         "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
     }
 
-def get_youtube_transcript(video_id):
-    """Extract transcript with timestamps from YouTube supporting v1.x and v0.x APIs."""
-    debug_steps = []
+def get_youtube_caption_tracks(video_id):
+    """Retrieve available subtitle tracks and signed baseUrls via YouTube Android Player API without scraping."""
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-        raw_data = None
-
-        # 1. Modern v1.x API
-        if hasattr(YouTubeTranscriptApi, 'fetch') or hasattr(YouTubeTranscriptApi, 'list'):
-            debug_steps.append("detected_v1")
-            session = requests.Session()
-            session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-            })
-            api = YouTubeTranscriptApi(http_client=session)
-            try:
-                debug_steps.append("try_fetch")
-                fetched = api.fetch(video_id, languages=['es', 'es-419', 'es-ES', 'es-AR', 'en'])
-                raw_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                debug_steps.append(f"fetch_ok_{len(raw_data) if raw_data else 0}")
-            except Exception as e_fetch:
-                debug_steps.append(f"fetch_err:{type(e_fetch).__name__}:{e_fetch}")
-                try:
-                    tl = api.list(video_id)
-                    debug_steps.append("list_ok")
-                    for t in tl:
-                        lang = getattr(t, 'language_code', 'unknown')
-                        debug_steps.append(f"t_{lang}")
-                        fetched = t.fetch()
-                        raw_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                        if raw_data:
-                            debug_steps.append(f"t_ok_{len(raw_data)}")
-                            break
-                except Exception as e_list:
-                    debug_steps.append(f"list_err:{type(e_list).__name__}:{e_list}")
-                    raise e_list
-        # 2. Legacy v0.x API
-        elif hasattr(YouTubeTranscriptApi, 'get_transcript'):
-            debug_steps.append("detected_v0")
-            try:
-                raw_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['es', 'es-419', 'es-ES', 'en'])
-            except Exception as e_v0:
-                debug_steps.append(f"v0_err:{e_v0}")
-                if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-                    tl = YouTubeTranscriptApi.list_transcripts(video_id)
-                    for item in tl:
-                        raw_data = item.fetch()
-                        if raw_data:
-                            break
-        else:
-            debug_steps.append("no_known_api")
-
-        if not raw_data:
-            return {
-                "success": False,
-                "debug": " | ".join(debug_steps),
-                "error": "No se encontraron subtítulos disponibles para este video en YouTube. Asegúrate de que el video tenga subtítulos activados (CC)."
-            }
-
-        full_text_pieces = []
-        timed_snippets = []
-        
-        for item in raw_data:
-            text = (item.get('text') if isinstance(item, dict) else getattr(item, 'text', '')).strip()
-            start = int(item.get('start') if isinstance(item, dict) else getattr(item, 'start', 0))
-            minutes = start // 60
-            seconds = start % 60
-            timestamp = f"{minutes:02d}:{seconds:02d}"
-            
-            if text:
-                full_text_pieces.append(text)
-                timed_snippets.append(f"[{timestamp}] {text}")
-                
-        if not full_text_pieces:
-            return {
-                "success": False,
-                "error": "La transcripción del video está vacía."
-            }
-
-        last_start = raw_data[-1].get('start', 0) if isinstance(raw_data[-1], dict) else getattr(raw_data[-1], 'start', 0)
-        return {
-            "success": True,
-            "full_text": " ".join(full_text_pieces),
-            "timed_text": "\n".join(timed_snippets),
-            "duration_seconds": int(last_start)
+        url = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+        payload = {
+            "context": {
+                "client": {
+                    "clientName": "ANDROID",
+                    "clientVersion": "20.10.38"
+                }
+            },
+            "videoId": video_id
         }
+        resp = requests.post(url, json=payload, timeout=8)
+        if resp.status_code == 200:
+            data = resp.json()
+            raw_tracks = data.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
+            tracks = []
+            for t in raw_tracks:
+                name = t.get("name", {}).get("runs", [{}])[0].get("text", "Subtítulos")
+                tracks.append({
+                    "name": name,
+                    "language_code": t.get("languageCode", "es"),
+                    "base_url": t.get("baseUrl", ""),
+                    "is_auto": t.get("kind") == "asr" or "auto" in name.lower()
+                })
+            return tracks
     except Exception as e:
-        error_msg = str(e)
-        if "TranscriptsDisabled" in error_msg or "Subtitles are disabled" in error_msg:
-            return {
-                "success": False,
-                "error": "El autor de este video tiene desactivados los subtítulos en YouTube. Si tienes diapositivas o apuntes en PDF, súbelos directamente y la IA generará el apunte completo."
-            }
-        if "NoTranscriptFound" in error_msg:
-            return {
-                "success": False,
-                "error": "No se encontró una transcripción disponible para este video. Prueba con un video que tenga subtítulos (CC) activados."
-            }
-        if "IpBlocked" in error_msg or "blocking requests from your IP" in error_msg:
-            return {
-                "success": False,
-                "error": "YouTube está limitando temporalmente las consultas desde la nube para este video en particular. Puedes subir un documento PDF y la IA generará el apunte completo sin problemas."
-            }
-        return {
-            "success": False,
-            "error": f"No se pudo extraer la transcripción del video ({error_msg}). Asegúrate de que el video tenga subtítulos activados en YouTube."
-        }
+        print(f"Error fetching caption tracks for {video_id}: {e}")
+    return []
 
 @app.route('/')
 def index():
@@ -195,9 +116,9 @@ def index():
 def check_status():
     return jsonify({
         "status": "ready",
-        "engine": "Puter.js (Client-Side AI)",
-        "version": "1.2.0",
-        "message": "Servicio activo. La IA corre en el navegador mediante Puter.js sin depender de claves de servidor."
+        "engine": "Puter.js (Client-Side AI & Transcripts)",
+        "version": "1.3.0",
+        "message": "Servicio activo. La IA corre en el navegador mediante Puter.js y las transcripciones se descargan desde el cliente."
     })
 
 @app.route('/api/youtube-preview', methods=['POST'])
@@ -209,13 +130,16 @@ def youtube_preview():
         return jsonify({"success": False, "error": "Enlace de YouTube no válido"}), 400
         
     meta = get_youtube_metadata(video_id)
+    tracks = get_youtube_caption_tracks(video_id)
     meta["video_id"] = video_id
     meta["success"] = True
+    meta["caption_tracks"] = tracks
+    meta["has_captions"] = len(tracks) > 0
     return jsonify(meta)
 
-@app.route('/api/youtube-transcript', methods=['GET', 'POST'])
-def youtube_transcript():
-    """Lightweight endpoint that extracts YouTube subtitles for Puter.js."""
+@app.route('/api/youtube-tracks', methods=['GET', 'POST'])
+def youtube_tracks():
+    """Lightweight endpoint returning available caption track URLs for client-side download."""
     url = ''
     if request.method == 'POST':
         data = request.get_json(silent=True) or request.form or {}
@@ -228,27 +152,16 @@ def youtube_transcript():
         return jsonify({"success": False, "error": "Enlace o ID de YouTube no válido."}), 400
         
     meta = get_youtube_metadata(video_id)
-    transcript_res = get_youtube_transcript(video_id)
-    
-    if not transcript_res.get("success"):
-        return jsonify({
-            "success": False,
-            "video_id": video_id,
-            "title": meta.get("title", f"Video {video_id}"),
-            "thumbnail": meta.get("thumbnail", ""),
-            "debug": transcript_res.get("debug"),
-            "error": transcript_res.get("error", "No se encontraron subtítulos para este video.")
-        }), 400
-        
+    tracks = get_youtube_caption_tracks(video_id)
     return jsonify({
         "success": True,
         "video_id": video_id,
         "title": meta.get("title", f"Video {video_id}"),
         "thumbnail": meta.get("thumbnail", ""),
-        "full_text": transcript_res.get("full_text", ""),
-        "timed_text": transcript_res.get("timed_text", ""),
-        "duration_seconds": transcript_res.get("duration_seconds", 0)
+        "has_captions": len(tracks) > 0,
+        "caption_tracks": tracks
     })
+
 
 @app.route('/api/demo', methods=['GET'])
 def get_demo_notes():
