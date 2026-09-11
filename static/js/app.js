@@ -331,8 +331,8 @@ REGLAS DE CONTENIDO:
         }
 
         // Regex fallback
-        const reText = /<text start="([^"]*)" dur="([^"]*)">([\s\S]*?)<\/text>/g;
-        const reP = /<p t="(\d+)" d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+        const reText = /<text\b[^>]*\bstart="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g;
+        const reP = /<p\b[^>]*\bt="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
         const reS = /<s[^>]*>([\s\S]*?)<\/s>/g;
 
         let match;
@@ -340,7 +340,7 @@ REGLAS DE CONTENIDO:
         while ((match = reText.exec(xmlText)) !== null) {
             format1Found = true;
             const startSec = parseFloat(match[1]) || 0;
-            const text = decodeEntities(match[3].replace(/<[^>]+>/g, ''));
+            const text = decodeEntities(match[2].replace(/<[^>]+>/g, ''));
             if (text) {
                 if (startSec > maxSeconds) maxSeconds = startSec;
                 const mm = String(Math.floor(startSec / 60)).padStart(2, '0');
@@ -354,7 +354,7 @@ REGLAS DE CONTENIDO:
             while ((match = reP.exec(xmlText)) !== null) {
                 const startMs = parseInt(match[1], 10) || 0;
                 const startSec = startMs / 1000;
-                const inner = match[3];
+                const inner = match[2];
                 let segmentText = '';
 
                 const sMatches = [...inner.matchAll(reS)];

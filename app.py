@@ -5,6 +5,7 @@ import json
 import logging
 import tempfile
 import base64
+import html
 import http.cookiejar
 import requests
 from pathlib import Path
@@ -112,8 +113,161 @@ def get_youtube_cookiefile():
 
     return None
 
+def fetch_and_parse_timedtext(url):
+    """Fetch YouTube timedtext XML (srv1 or srv3) and parse into snippets and full text."""
+    try:
+        r = requests.get(url, timeout=12)
+        if r.status_code != 200 or not r.text or not r.text.strip():
+            return None
+        xml_text = r.text
+        snippets = []
+        
+        # 1. Try format 1: <text start="12.34" dur="2.5">Hello</text>
+        re_text = re.compile(r'<text\b[^>]*\bstart="([\d\.]+)"[^>]*>(.*?)</text>', re.DOTALL)
+        matches = list(re_text.finditer(xml_text))
+        if matches:
+            for m in matches:
+                start_sec = float(m.group(1))
+                txt = html.unescape(re.sub(r'<[^>]+>', '', m.group(2))).strip()
+                if txt:
+                    snippets.append((start_sec, txt))
+        else:
+            # 2. Try format 3: <p t="12340" d="2500"><s>Hello</s></p>
+            re_p = re.compile(r'<p\b[^>]*\bt="(\d+)"[^>]*>(.*?)</p>', re.DOTALL)
+            re_s = re.compile(r'<s\b[^>]*>(.*?)</s>', re.DOTALL)
+            for m in re_p.finditer(xml_text):
+                start_sec = int(m.group(1)) / 1000.0
+                inner = m.group(2)
+                s_matches = re_s.findall(inner)
+                if s_matches:
+                    seg = ''.join(s_matches)
+                else:
+                    seg = re.sub(r'<[^>]+>', '', inner)
+                txt = html.unescape(seg).strip()
+                if txt:
+                    snippets.append((start_sec, txt))
+
+        if not snippets:
+            return None
+
+        full_text = ' '.join([s[1] for s in snippets]).strip()
+        timed_snippets = []
+        for s in snippets:
+            mm = int(s[0] // 60)
+            ss = int(s[0] % 60)
+            timed_snippets.append(f"[{mm:02d}:{ss:02d}] {s[1]}")
+        timed_text = '\n'.join(timed_snippets)
+
+        return {
+            "success": True,
+            "language": "es",
+            "full_text": full_text,
+            "timed_text": timed_text,
+            "snippets_count": len(snippets)
+        }
+    except Exception as e:
+        logger.warning(f"Error fetching/parsing timedtext XML: {e}")
+        return None
+
+def get_innertube_android_data(video_id):
+    """Query official YouTube Android Player API.
+    Bypasses datacenter web bot challenges, runs in ~300ms, and provides full signed caption tracks and audio URLs.
+    """
+    try:
+        url = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+        payload = {
+            "context": {
+                "client": {
+                    "clientName": "ANDROID",
+                    "clientVersion": "20.10.38",
+                    "androidSdkVersion": 34,
+                    "hl": "es",
+                    "gl": "ES",
+                    "utcOffsetMinutes": 0
+                }
+            },
+            "videoId": video_id
+        }
+        headers = {
+            "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
+            "Content-Type": "application/json"
+        }
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return None, f"HTTP {resp.status_code}"
+        
+        data = resp.json()
+        playability = data.get("playabilityStatus", {}).get("status")
+        if playability != "OK":
+            return None, f"Playability: {playability}"
+
+        raw_tracks = data.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
+        caption_tracks = []
+        for t in raw_tracks:
+            name = t.get("name", {}).get("runs", [{}])[0].get("text", "Subtítulos")
+            base_url = t.get("baseUrl", "")
+            if "fmt=" not in base_url:
+                base_url += "&fmt=srv1"
+            caption_tracks.append({
+                "name": name,
+                "language_code": t.get("languageCode", "es"),
+                "base_url": base_url,
+                "is_auto": t.get("kind") == "asr" or "auto" in name.lower()
+            })
+
+        # Prefer Spanish first, then English
+        caption_tracks.sort(key=lambda x: 0 if x["language_code"].startswith("es") else (1 if x["language_code"].startswith("en") else 2))
+
+        sd = data.get("streamingData", {})
+        prog_formats = sd.get("formats", [])
+        adaptive_formats = sd.get("adaptiveFormats", [])
+        
+        # Prefer progressive MP4 format (itag 18 / 22) because YouTube CDN allows continuous streaming
+        # without token 403 errors or strict byte-range limits on datacenter servers.
+        selected_audio = next((f for f in prog_formats if f.get("itag") in [18, 22] and f.get("url")), None)
+        if not selected_audio:
+            audio_formats = [f for f in adaptive_formats if f.get("mimeType", "").startswith("audio/") and f.get("url")]
+            if audio_formats:
+                selected_audio = next((f for f in audio_formats if f.get("itag") in [140, 139, 251, 250]), audio_formats[0])
+
+        details = data.get("videoDetails", {})
+        title = details.get("title", f"Video {video_id}")
+        author = details.get("author", "YouTube")
+
+        return {
+            "title": title,
+            "author": author,
+            "thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+            "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+            "caption_tracks": caption_tracks,
+            "has_captions": len(caption_tracks) > 0,
+            "has_audio": selected_audio is not None,
+            "audio_url": selected_audio.get("url") if selected_audio else None,
+            "audio_ext": "webm" if (selected_audio and "webm" in selected_audio.get("mimeType", "")) else "m4a",
+            "audio_headers": {
+                "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)"
+            }
+        }, "ok"
+    except Exception as e:
+        logger.warning(f"Innertube Android API failed for {video_id}: {e}")
+        return None, str(e)
+
 def get_youtube_transcript_api(video_id):
-    """Retrieve subtitles directly via youtube-transcript-api without downloading media."""
+    """Retrieve subtitles directly via Innertube Android API or fallback to youtube-transcript-api."""
+    # 1. Primary: Fast, datacenter-immune Innertube Android timedtext
+    try:
+        idata, _ = get_innertube_android_data(video_id)
+        if idata and idata.get("caption_tracks"):
+            for track in idata["caption_tracks"]:
+                if track.get("base_url"):
+                    parsed = fetch_and_parse_timedtext(track["base_url"])
+                    if parsed and parsed.get("full_text"):
+                        parsed["language"] = track.get("language_code", "es")
+                        return parsed
+    except Exception as ie:
+        logger.warning(f"Innertube timedtext extraction failed for {video_id}: {ie}")
+
+    # 2. Secondary fallback: youtube-transcript-api
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         session = requests.Session()
@@ -170,7 +324,18 @@ def get_youtube_transcript_api(video_id):
         return None
 
 def get_youtube_video_data(video_id):
-    """Retrieve video metadata, subtitle tracks, and audio streaming info via yt-dlp with cookie & player fallback."""
+    """Retrieve video metadata, subtitle tracks, and audio streaming info with progressive fallbacks:
+    1. Direct Innertube Android API (fastest, unblocked on datacenters)
+    2. yt-dlp with android player client
+    3. youtube-transcript-api
+    4. oEmbed metadata
+    """
+    # 1. Primary: Innertube Android API
+    vdata, err = get_innertube_android_data(video_id)
+    if vdata and (vdata.get("has_captions") or vdata.get("has_audio")):
+        return vdata, {"status": "ok_via_innertube_android"}
+
+    # 2. Secondary fallback: yt-dlp with android player client only
     cookie_file = get_youtube_cookiefile()
     ydl_opts = {
         'skip_download': True,
@@ -179,12 +344,12 @@ def get_youtube_video_data(video_id):
         'extract_flat': False,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb', 'web'],
+                'player_client': ['android'],
                 'player_skip': ['webpage', 'configs']
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
             'Accept-Language': 'es-419,es;q=0.9,en;q=0.8'
         }
     }
@@ -199,7 +364,6 @@ def get_youtube_video_data(video_id):
             auto_subs = info.get('automatic_captions', {})
             caption_tracks = []
             
-            # Prioritize Spanish, then English
             for lang_code in ['es', 'es-419', 'es-ES', 'es-US', 'en', 'en-US']:
                 track_list = subs.get(lang_code) or auto_subs.get(lang_code)
                 if track_list:
@@ -213,7 +377,6 @@ def get_youtube_video_data(video_id):
                         "is_auto": lang_code in auto_subs and lang_code not in subs
                     })
             
-            # If no matches above, add whatever subtitles exist
             if not caption_tracks:
                 for lang_code, track_list in list(subs.items())[:3] + list(auto_subs.items())[:3]:
                     pref = next((s['url'] for s in track_list if s.get('ext') in ['srv1', 'srv3']), track_list[0]['url'])
@@ -224,19 +387,6 @@ def get_youtube_video_data(video_id):
                         "is_auto": lang_code in auto_subs and lang_code not in subs
                     })
 
-            # Check youtube-transcript-api as backup for caption_tracks if empty
-            if not caption_tracks:
-                t_data = get_youtube_transcript_api(video_id)
-                if t_data and t_data.get("full_text"):
-                    caption_tracks.append({
-                        "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
-                        "language_code": t_data.get('language', 'es'),
-                        "base_url": f"/api/youtube-transcript?videoId={video_id}",
-                        "is_auto": False,
-                        "is_api": True
-                    })
-            
-            # Extract lightweight audio format for Speech-to-Text
             formats = info.get('formats', [])
             audio_formats = [f for f in formats if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('url')]
             selected_audio = None
@@ -259,33 +409,49 @@ def get_youtube_video_data(video_id):
                 "audio_headers": selected_audio.get('http_headers', {}) if selected_audio else {},
                 "audio_format_id": selected_audio.get('format_id') if selected_audio else None,
                 "audio_ext": selected_audio.get('ext', 'm4a') if selected_audio else 'm4a'
-            }, {"status": "ok"}
+            }, {"status": "ok_via_yt_dlp"}
     except Exception as e:
         logger.warning(f"yt-dlp extract failed for {video_id}: {e}")
-        # Even if yt-dlp failed, attempt direct subtitles via youtube-transcript-api!
-        t_data = get_youtube_transcript_api(video_id)
-        if t_data and t_data.get("full_text"):
-            meta = get_youtube_metadata(video_id)
-            return {
-                "title": meta.get("title", f"Video {video_id}"),
-                "author": meta.get("author", "YouTube"),
-                "thumbnail": meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
-                "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-                "caption_tracks": [{
-                    "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
-                    "language_code": t_data.get('language', 'es'),
-                    "base_url": f"/api/youtube-transcript?videoId={video_id}",
-                    "is_auto": False,
-                    "is_api": True
-                }],
-                "has_captions": True,
-                "has_audio": False,
-                "audio_url": None,
-                "audio_headers": {},
-                "audio_format_id": None,
-                "audio_ext": "m4a"
-            }, {"status": "ok_via_transcript_api"}
-        return None, {"error": str(e)}
+
+    # 3. Tertiary fallback: youtube-transcript-api
+    t_data = get_youtube_transcript_api(video_id)
+    if t_data and t_data.get("full_text"):
+        meta = get_youtube_metadata(video_id)
+        return {
+            "title": meta.get("title", f"Video {video_id}"),
+            "author": meta.get("author", "YouTube"),
+            "thumbnail": meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
+            "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+            "caption_tracks": [{
+                "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
+                "language_code": t_data.get('language', 'es'),
+                "base_url": f"/api/youtube-transcript?videoId={video_id}",
+                "is_auto": False,
+                "is_api": True
+            }],
+            "has_captions": True,
+            "has_audio": False,
+            "audio_url": None,
+            "audio_headers": {},
+            "audio_format_id": None,
+            "audio_ext": "m4a"
+        }, {"status": "ok_via_transcript_api"}
+
+    # 4. Final fallback: oEmbed
+    meta = get_youtube_metadata(video_id)
+    return {
+        "title": meta.get("title", f"Video {video_id}"),
+        "author": meta.get("author", "YouTube"),
+        "thumbnail": meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
+        "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+        "caption_tracks": [],
+        "has_captions": False,
+        "has_audio": False,
+        "audio_url": None,
+        "audio_headers": {},
+        "audio_format_id": None,
+        "audio_ext": "m4a"
+    }, {"status": "metadata_only"}
 
 def get_youtube_caption_tracks(video_id):
     """Retrieve available subtitle tracks and signed baseUrls."""
@@ -318,33 +484,10 @@ def youtube_preview():
         return jsonify({"success": False, "error": "Enlace de YouTube no válido"}), 400
         
     vdata, debug_info = get_youtube_video_data(video_id)
-    if vdata:
-        vdata["video_id"] = video_id
-        vdata["success"] = True
-        vdata["debug"] = debug_info
-        return jsonify(vdata)
-
-    # Fallback to oEmbed + youtube-transcript-api check
-    meta = get_youtube_metadata(video_id)
-    t_data = get_youtube_transcript_api(video_id)
-    has_captions = t_data is not None and bool(t_data.get("full_text"))
-    caption_tracks = []
-    if has_captions:
-        caption_tracks.append({
-            "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
-            "language_code": t_data.get('language', 'es'),
-            "base_url": f"/api/youtube-transcript?videoId={video_id}",
-            "is_auto": False,
-            "is_api": True
-        })
-
-    meta["video_id"] = video_id
-    meta["success"] = True
-    meta["caption_tracks"] = caption_tracks
-    meta["has_captions"] = has_captions
-    meta["has_audio"] = False
-    meta["debug"] = debug_info
-    return jsonify(meta)
+    vdata["video_id"] = video_id
+    vdata["success"] = True
+    vdata["debug"] = debug_info
+    return jsonify(vdata)
 
 @app.route('/api/youtube-tracks', methods=['GET', 'POST'])
 def youtube_tracks():
@@ -361,39 +504,14 @@ def youtube_tracks():
         return jsonify({"success": False, "error": "Enlace o ID de YouTube no válido."}), 400
         
     vdata, debug_info = get_youtube_video_data(video_id)
-    if vdata:
-        return jsonify({
-            "success": True,
-            "video_id": video_id,
-            "title": vdata.get("title", f"Video {video_id}"),
-            "thumbnail": vdata.get("thumbnail", ""),
-            "has_captions": vdata.get("has_captions", False),
-            "has_audio": vdata.get("has_audio", False),
-            "caption_tracks": vdata.get("caption_tracks", []),
-            "debug": debug_info
-        })
-
-    meta = get_youtube_metadata(video_id)
-    t_data = get_youtube_transcript_api(video_id)
-    has_captions = t_data is not None and bool(t_data.get("full_text"))
-    caption_tracks = []
-    if has_captions:
-        caption_tracks.append({
-            "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
-            "language_code": t_data.get('language', 'es'),
-            "base_url": f"/api/youtube-transcript?videoId={video_id}",
-            "is_auto": False,
-            "is_api": True
-        })
-
     return jsonify({
         "success": True,
         "video_id": video_id,
-        "title": meta.get("title", f"Video {video_id}"),
-        "thumbnail": meta.get("thumbnail", ""),
-        "has_captions": has_captions,
-        "has_audio": False,
-        "caption_tracks": caption_tracks,
+        "title": vdata.get("title", f"Video {video_id}"),
+        "thumbnail": vdata.get("thumbnail", ""),
+        "has_captions": vdata.get("has_captions", False),
+        "has_audio": vdata.get("has_audio", False),
+        "caption_tracks": vdata.get("caption_tracks", []),
         "debug": debug_info
     })
 
