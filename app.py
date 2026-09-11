@@ -87,7 +87,13 @@ def get_youtube_transcript(video_id):
         # 1. Modern v1.x API
         if hasattr(YouTubeTranscriptApi, 'fetch') or hasattr(YouTubeTranscriptApi, 'list'):
             debug_steps.append("detected_v1")
-            api = YouTubeTranscriptApi()
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            })
+            api = YouTubeTranscriptApi(http_client=session)
             try:
                 debug_steps.append("try_fetch")
                 fetched = api.fetch(video_id, languages=['es', 'es-419', 'es-ES', 'es-AR', 'en'])
