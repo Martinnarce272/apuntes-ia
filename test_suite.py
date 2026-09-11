@@ -53,43 +53,31 @@ class TestApuntesIA(unittest.TestCase):
             self.assertEqual(res.status_code, 200)
             data = json.loads(res.data)
             self.assertTrue(data['success'])
-    def test_extract_and_validate_key_header_and_sanitization(self):
-        # Test clean extraction with whitespace and quotes from header
-        with app.test_request_context('/', headers={'X-Gemini-Api-Key': ' " AIzaSyMockKeyForValidationPurposes12345 " '}):
-            from app import extract_and_validate_key
-            key, err = extract_and_validate_key()
-            self.assertIsNone(err)
-            self.assertEqual(key, "AIzaSyMockKeyForValidationPurposes12345")
+    def test_youtube_transcript_missing_url(self):
+        res = self.client.get('/api/youtube-transcript')
+        self.assertEqual(res.status_code, 400)
+        data = json.loads(res.data)
+        self.assertFalse(data['success'])
+        self.assertIn('error', data)
 
-    def test_extract_and_validate_key_accepts_aq_key_format(self):
-        with app.test_request_context('/', headers={'X-Gemini-Api-Key': ' " AQ.MockTestValidationKeyLongEnough99999 " '}):
-            from app import extract_and_validate_key
-            key, err = extract_and_validate_key()
-            self.assertIsNone(err)
-            self.assertEqual(key, "AQ.MockTestValidationKeyLongEnough99999")
+    def test_youtube_transcript_invalid_url(self):
+        res = self.client.post('/api/youtube-transcript', json={'url': 'invalid-url-here'})
+        self.assertEqual(res.status_code, 400)
+        data = json.loads(res.data)
+        self.assertFalse(data['success'])
+        self.assertIn('error', data)
 
-    def test_extract_and_validate_key_too_short(self):
-        with app.test_request_context('/', headers={'X-Gemini-Api-Key': 'short_key'}):
-            from app import extract_and_validate_key
-            key, err = extract_and_validate_key()
-            self.assertIsNone(key)
-            self.assertIn("incompleta", err)
-
-    def test_generate_notes_missing_key_returns_400_with_auth_flag(self):
-        import os
-        old_env = os.environ.get('GEMINI_API_KEY')
-        if 'GEMINI_API_KEY' in os.environ:
-            del os.environ['GEMINI_API_KEY']
-        try:
-            res = self.client.post('/api/generate-notes', data={'youtubeUrl': 'https://youtu.be/dQw4w9WgXcQ'})
-            self.assertEqual(res.status_code, 400)
-            data = json.loads(res.data)
+    def test_youtube_transcript_endpoint_structure(self):
+        res = self.client.get('/api/youtube-transcript?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+        self.assertIn(res.status_code, [200, 400])
+        data = json.loads(res.data)
+        if res.status_code == 200:
+            self.assertTrue(data['success'])
+            self.assertIn('full_text', data)
+            self.assertIn('title', data)
+        else:
             self.assertFalse(data['success'])
-            self.assertTrue(data['is_auth_error'])
-            self.assertIn('aistudio.google.com', data['error'])
-        finally:
-            if old_env:
-                os.environ['GEMINI_API_KEY'] = old_env
+            self.assertIn('error', data)
 
 if __name__ == '__main__':
     unittest.main()

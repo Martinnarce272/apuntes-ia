@@ -24,6 +24,12 @@
     <!-- Mermaid.js for interactive diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 
+    <!-- Puter.js for Browser-Side AI -->
+    <script src="https://js.puter.com/v2/"></script>
+
+    <!-- PDF.js for Browser-Side PDF Text Extraction -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
     <!-- Custom CSS -->
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
@@ -37,7 +43,7 @@
                 </div>
                 <div class="brand-text">
                     <span class="brand-name">Apuntes<span>IA</span></span>
-                    <span class="brand-tagline">Estudio Inteligente con Gemini</span>
+                    <span class="brand-tagline">Estudio Inteligente con IA Multi-Modelo</span>
                 </div>
             </div>
 
@@ -46,11 +52,11 @@
                     <i class="fa-solid fa-sparkles"></i>
                     <span>Ver Apunte de Ejemplo</span>
                 </button>
-                <button type="button" id="btn-api-key" class="btn-secondary nav-btn" title="Configurar clave Gemini">
-                    <i class="fa-solid fa-key"></i>
-                    <span id="key-status-text">Clave Gemini</span>
-                    <span id="key-indicator" class="status-dot"></span>
-                </button>
+                <div class="ai-status-pill" title="IA ilimitada gratuita vía Puter.js — Sin cuotas compartidas ni claves de API">
+                    <i class="fa-solid fa-bolt"></i>
+                    <span>IA Ilimitada (Puter.js)</span>
+                    <span class="status-dot active"></span>
+                </div>
                 <button id="btn-theme-toggle" class="icon-btn" title="Cambiar tema">
                     <i class="fa-solid fa-moon"></i>
                 </button>
@@ -67,7 +73,7 @@
                         Aprende 10x más rápido
                     </div>
                     <h1>Transforma videos y documentos en <span class="gradient-text">apuntes maestros</span></h1>
-                    <p class="hero-subtitle">Ingresa un enlace de YouTube o sube tus PDFs. La IA sintetizará conceptos clave, desarrollos paso a paso, fórmulas, diagramas visuales y flashcards.</p>
+                    <p class="hero-subtitle">Ingresa enlaces de YouTube o sube tus PDFs. La IA sintetizará conceptos clave, desarrollos paso a paso, fórmulas, diagramas visuales y flashcards sin límites de cuotas ni claves de API.</p>
                 </div>
 
                 <form id="generator-form" class="dashboard-grid">
@@ -186,6 +192,17 @@
                                 <textarea id="instructions" name="instructions" rows="3" placeholder="Ej: 'Presta especial atención al teorema central', 'Desarrolla en detalle los pasos del ejercicio', o 'Explícalo como para principiantes'..."></textarea>
                             </div>
 
+                            <!-- Puter Free AI Onboarding Notice -->
+                            <div class="puter-onboarding-banner">
+                                <div class="puter-banner-icon">
+                                    <i class="fa-solid fa-bolt"></i>
+                                </div>
+                                <div class="puter-banner-text">
+                                    <strong>Sin API keys ni cuotas que se agoten:</strong>
+                                    <p>La primera vez, Puter te va a pedir crear una cuenta gratuita en 10 segundos — es gratis y así cada usuario usa su propia cuota, sin límites compartidos.</p>
+                                </div>
+                            </div>
+
                             <!-- Generate CTA -->
                             <div class="action-box">
                                 <button type="submit" id="btn-generate" class="btn-primary btn-cta">
@@ -194,7 +211,7 @@
                                         <span>Generar Apunte Inteligente</span>
                                     </span>
                                 </button>
-                                <p class="cta-notice"><i class="fa-solid fa-shield-halved"></i> Análisis directo en memoria sin almacenar tus datos privados.</p>
+                                <p class="cta-notice"><i class="fa-solid fa-shield-halved"></i> Análisis directo en tu navegador con Puter.js — 100% privado y seguro.</p>
                             </div>
                         </div>
                     </div>
@@ -405,52 +422,6 @@
                 </div>
             </section>
         </main>
-
-        <!-- API Key Modal -->
-        <div id="modal-api-key" class="modal-overlay hidden">
-            <div class="modal-box glass-card">
-                <div class="modal-header">
-                    <div class="modal-title-wrap">
-                        <i class="fa-solid fa-key icon-accent"></i>
-                        <h3>Configuración de Gemini API Key</h3>
-                    </div>
-                    <button id="btn-close-modal" class="icon-btn"><i class="fa-solid fa-xmark"></i></button>
-                </div>
-
-                <div class="modal-body">
-                    <p class="modal-text">Para que la IA sintetice apuntes, fórmulas y flashcards de tus videos y PDFs, usa una clave oficial gratuita de Google Gemini.</p>
-                    
-                    <div class="key-help-box key-cta-box" style="background: rgba(99, 102, 241, 0.12); border-color: rgba(99, 102, 241, 0.35); padding: 1rem;">
-                        <i class="fa-solid fa-gift" style="font-size: 1.4rem; color: #a5b4fc;"></i>
-                        <div>
-                            <strong style="color: #ffffff; display: block; margin-bottom: 0.25rem;">Es 100% gratuita y toma 10 segundos:</strong>
-                            <p style="font-size: 0.82rem; margin-bottom: 0.6rem; color: var(--text-muted);">Entra con tu cuenta de Google (Gmail), presiona "Create API key" y copia tu clave (comienza con <code>AIzaSy...</code> o <code>AQ...</code>).</p>
-                            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="btn-get-key" style="display: inline-flex; align-items: center; gap: 0.4rem; background: var(--primary-gradient); color: #fff; padding: 0.45rem 0.9rem; border-radius: var(--radius-sm); font-size: 0.85rem; font-weight: 600; text-decoration: none;">
-                                <i class="fa-solid fa-arrow-up-right-from-square"></i> Obtener Clave Gratis en Google AI Studio
-                            </a>
-                        </div>
-                    </div>
-
-                    <div class="input-field" style="margin-top: 1.2rem;">
-                        <label for="input-api-key">Pega aquí tu clave gratuita de Gemini:</label>
-                        <div class="input-with-icon">
-                            <i class="fa-solid fa-key"></i>
-                            <input type="password" id="input-api-key" placeholder="AIzaSy... o AQ..." autocomplete="off">
-                            <button type="button" id="btn-toggle-key-vis" class="icon-btn-inline" title="Mostrar/ocultar">
-                                <i class="fa-solid fa-eye"></i>
-                            </button>
-                        </div>
-                    </div>
-
-                    <div id="key-message-box" class="message-box hidden"></div>
-                </div>
-
-                <div class="modal-footer">
-                    <button type="button" id="btn-cancel-key" class="btn-secondary">Cancelar</button>
-                    <button type="button" id="btn-save-key" class="btn-primary">Guardar Clave</button>
-                </div>
-            </div>
-        </div>
 
         <!-- Toast Notification -->
         <div id="toast" class="toast hidden">

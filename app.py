@@ -4,11 +4,9 @@ import re
 import json
 import requests
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_from_directory
-from werkzeug.utils import secure_filename
-from dotenv import load_dotenv
+from flask import Flask, render_template, request, jsonify
 
-# Ensure UTF-8 output encoding on Windows console to avoid charmap UnicodeEncodeErrors
+# Ensure UTF-8 output encoding on Windows console
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -16,134 +14,22 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-# Load local .env if present
-env_path = Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=env_path)
-
-from google.genai import types
-
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
-UPLOAD_FOLDER = Path(__file__).parent / "uploads"
-UPLOAD_FOLDER.mkdir(exist_ok=True)
-app.config['UPLOAD_FOLDER'] = str(UPLOAD_FOLDER)
 
 @app.errorhandler(500)
 def handle_500(err):
     """Ensure Flask never returns raw HTML 500 pages."""
     return jsonify({
         "success": False,
-        "error": "Ocurrió un error inesperado en el servidor al procesar la solicitud. Intenta nuevamente."
+        "error": "Ocurrió un error inesperado en el servidor al procesar la solicitud."
     }), 500
 
-@app.errorhandler(413)
-def handle_413(err):
-    """Handle upload exceeding max content length."""
+@app.errorhandler(404)
+def handle_404(err):
     return jsonify({
         "success": False,
-        "error": "El archivo PDF o contenido subido excede el límite máximo permitido de 50MB."
-    }), 413
-
-def robust_parse_json(text):
-    """Robustly parse JSON strings from Gemini, handling unescaped LaTeX backslashes."""
-    if not text:
-        raise ValueError("Respuesta vacía de la IA.")
-        
-    text = text.strip()
-    if text.startswith("```json"):
-        text = text[7:]
-    if text.startswith("```"):
-        text = text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    text = text.strip()
-
-    start = text.find('{')
-    end = text.rfind('}')
-    if start != -1 and end != -1:
-        text = text[start:end+1]
-
-    # Try standard strict=False first
-    try:
-        return json.loads(text, strict=False)
-    except Exception:
-        pass
-
-    # Regex repair for unescaped LaTeX macros (\frac, \Delta, \sigma, etc.)
-    def fix_escapes(match):
-        following = match.group(1)
-        if following in ['"', '\\', '/']:
-            return match.group(0)
-        if following in ['n', 't', 'r', 'b']:
-            after = match.group(2)
-            if after and after.isalpha():
-                return r'\\' + following + after
-            return match.group(0)
-        return r'\\' + match.group(0)[1:]
-
-    fixed = re.sub(r'\\(.)([a-zA-Z]?)', fix_escapes, text)
-    try:
-        return json.loads(fixed, strict=False)
-    except Exception:
-        pass
-
-    # Fallback: escape all backslashes that are not followed by " or \
-    fixed2 = re.sub(r'\\(?![/"\\])', r'\\\\', text)
-    return json.loads(fixed2, strict=False)
-
-class GeminiConfig:
-    """Centralized configuration for Gemini AI integration."""
-    DEFAULT_MODEL = "gemini-3.6-flash"
-    FALLBACK_MODELS = [
-        "gemini-3.6-flash",
-        "gemini-3.7-flash",
-        "gemini-flash-latest"
-    ]
-    TEMPERATURE = 0.3
-    RESPONSE_MIME_TYPE = "application/json"
-    KEY_HELP_URL = "https://aistudio.google.com/app/apikey"
-
-def extract_and_validate_key(request_data=None):
-    """
-    Retrieve, clean, and validate Gemini API key from:
-    1. Header 'X-Gemini-Api-Key'
-    2. Form data 'apiKey'
-    3. Server environment 'GEMINI_API_KEY'
-    Returns: (clean_key, error_message)
-    """
-    raw_key = None
-    
-    # 1. Check custom HTTP header first (best practice for client-side keys)
-    header_key = request.headers.get('X-Gemini-Api-Key')
-    if header_key:
-        raw_key = header_key
-    elif request_data and request_data.get('apiKey'):
-        raw_key = request_data.get('apiKey')
-    elif os.environ.get('GEMINI_API_KEY'):
-        raw_key = os.environ.get('GEMINI_API_KEY')
-        
-    if not raw_key:
-        return None, (
-            "Se requiere una clave de Google Gemini para procesar el apunte. "
-            "Toca el botón 'Clave Gemini' en la barra superior para ingresarla. "
-            f"Es 100% gratuita y la obtienes en {GeminiConfig.KEY_HELP_URL}."
-        )
-        
-    # Sanitize key: strip whitespaces, newlines, single and double quotes
-    clean_key = raw_key.strip(" \t\n\r'\"")
-        
-    if len(clean_key) < 20:
-        return None, (
-            "La clave ingresada parece incompleta o demasiado corta. "
-            f"Asegúrate de copiarla completa desde {GeminiConfig.KEY_HELP_URL}."
-        )
-        
-    return clean_key, None
-
-def get_api_key(request_data=None):
-    """Backwards-compatible helper returning clean key or None."""
-    key, _ = extract_and_validate_key(request_data)
-    return key
+        "error": "Recurso no encontrado."
+    }), 404
 
 def extract_youtube_id(url_or_id):
     """Extract YouTube video ID from various URL patterns or direct ID."""
@@ -289,114 +175,78 @@ def get_youtube_transcript(video_id):
         if "TranscriptsDisabled" in error_msg or "Subtitles are disabled" in error_msg:
             return {
                 "success": False,
-                "error": "El autor de este video tiene desactivados los subtítulos en YouTube. Si tienes diapositivas o apuntes de la clase en PDF, súbelos aquí y la IA generará el apunte completo."
+                "error": "El autor de este video tiene desactivados los subtítulos en YouTube. Si tienes apuntes o diapositivas en PDF, puedes subirlos directamente y la IA generará el apunte completo."
             }
         if "NoTranscriptFound" in error_msg:
             return {
                 "success": False,
-                "error": "No se encontró una transcripción en español o inglés para este video. Asegúrate de que el video cuente con subtítulos o transcripción automática generada por YouTube."
+                "error": "No se encontró una transcripción disponible para este video. Prueba con un video que tenga subtítulos (CC) activados."
             }
         return {
             "success": False,
-            "error": f"No se pudo extraer la transcripción del video ({error_msg}). Asegúrate de que el video tenga subtítulos o transcripción activada en YouTube."
+            "error": f"No se pudo extraer la transcripción del video ({error_msg}). Asegúrate de que el video tenga subtítulos activados en YouTube."
         }
 
-def extract_pdf_text(filepath):
-    """Extract text and metadata from PDF using pypdf."""
-    try:
-        from pypdf import PdfReader
-        reader = PdfReader(filepath)
-        total_pages = len(reader.pages)
-        pages_content = []
-        full_text = []
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/status', methods=['GET'])
+def check_status():
+    return jsonify({
+        "status": "ready",
+        "engine": "Puter.js (Client-Side AI)",
+        "message": "Servicio activo. La IA corre en el navegador mediante Puter.js sin depender de claves de servidor."
+    })
+
+@app.route('/api/youtube-preview', methods=['POST'])
+def youtube_preview():
+    data = request.get_json(silent=True) or request.form or {}
+    url = data.get('url', '')
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        return jsonify({"success": False, "error": "Enlace de YouTube no válido"}), 400
         
-        for i, page in enumerate(reader.pages):
-            page_text = page.extract_text() or ""
-            page_text = page_text.strip()
-            if page_text:
-                pages_content.append(f"--- PÁGINA {i+1} ---\n{page_text}")
-                full_text.append(page_text)
-                
-        return {
-            "success": True,
-            "pages": total_pages,
-            "content": "\n\n".join(pages_content),
-            "raw_text": "\n".join(full_text)
-        }
-    except Exception as e:
-        return {
+    meta = get_youtube_metadata(video_id)
+    meta["video_id"] = video_id
+    meta["success"] = True
+    return jsonify(meta)
+
+@app.route('/api/youtube-transcript', methods=['GET', 'POST'])
+def youtube_transcript():
+    """Lightweight endpoint that extracts YouTube subtitles for Puter.js."""
+    url = ''
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or request.form or {}
+        url = data.get('url') or data.get('videoId') or ''
+    else:
+        url = request.args.get('url') or request.args.get('videoId') or ''
+        
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        return jsonify({"success": False, "error": "Enlace o ID de YouTube no válido."}), 400
+        
+    meta = get_youtube_metadata(video_id)
+    transcript_res = get_youtube_transcript(video_id)
+    
+    if not transcript_res.get("success"):
+        return jsonify({
             "success": False,
-            "error": f"Error al procesar el archivo PDF: {str(e)}"
-        }
-
-SYSTEM_INSTRUCTION = """
-Eres un pedagogo experto y creador de material de estudio universitario de máxima calidad técnica y didáctica.
-Tu misión es transformar el material fuente proporcionado (transcripción de video de YouTube, contenido de documento PDF o ambos) en un **Apunte de Estudio Maestro** completo, profundo, visualmente enriquecido e interactivo.
-
-Debes responder ÚNICAMENTE con un objeto JSON válido (sin bloques de código markdown fuera del JSON, solo el JSON puro) con la siguiente estructura:
-
-{
-  "title": "Título Claro y Profesional del Tema Principal",
-  "topic_overview": "Breve sinopsis (2-3 oraciones) de lo que abarca este apunte",
-  "estimated_study_time": "ej. 25 min",
-  "key_takeaways": [
-    {
-      "type": "critical" | "rule" | "warning" | "tip",
-      "title": "Título de la idea clave o regla de oro",
-      "description": "Explicación concisa y contundente del concepto clave que no puede olvidarse."
-    }
-  ],
-  "developments": [
-    {
-      "unit_number": 1,
-      "title": "Título de la Sección / Unidad Temática",
-      "content_markdown": "Desarrollo profundo y exhaustivo de esta sección. Explica el qué, el porqué y el cómo. Incluye subtítulos (###), listas ordenadas, pasos detallados, ejemplos prácticos reales y fórmulas matemáticas en formato LaTeX (usando $formula$ para inline o $$formula$$ para bloque). No escatimes en detalles explicativos.",
-      "visual_description": "Descripción clara de qué imagen o gráfico conceptual ilustra este concepto",
-      "mermaid_diagram": "Código Mermaid.js válido (ej. graph TD o mindmap) si esta sección se beneficia de un diagrama conceptual de flujo o estructura. Si no aplica, dejar string vacío \"\"."
-    }
-  ],
-  "general_diagram": {
-    "title": "Mapa Mental o Flujo Global del Tema",
-    "mermaid_code": "Código Mermaid.js completo y sintácticamente válido (ej: graph TD\\n    A[Concepto Central] --> B[Rama 1]\\n    ...)"
-  },
-  "flashcards": [
-    {
-      "question": "Pregunta de examen o concepto a definir",
-      "answer": "Respuesta clara, precisa y completa para repasar activamente",
-      "topic": "Nombre del subtema"
-    }
-  ],
-  "quiz": [
-    {
-      "question": "¿Pregunta de opción múltiple estilo examen?",
-      "options": [
-        "Opción A",
-        "Opción B",
-        "Opción C",
-        "Opción D"
-      ],
-      "correct_index": 0,
-      "explanation": "Explicación detallada de por qué esta opción es la correcta y por qué las demás no."
-    }
-  ],
-  "exam_tips": [
-    "Pregunta típica de examen o trampa común del profesor y cómo responderla."
-  ],
-  "glossary": [
-    {
-      "term": "Término técnico",
-      "definition": "Definición exacta y contextualizada."
-    }
-  ]
-}
-
-REGLAS DE ORO:
-1. El contenido de 'developments' debe ser profundo, pedagógico y riguroso. No hagas un resumen superficial: desarrolla los temas paso a paso.
-2. Si hay fórmulas matemáticas, físicas o químicas, exprésalas siempre en LaTeX ($...$ o $$...$$).
-3. Asegúrate de que los diagramas Mermaid tengan sintaxis perfectamente válida sin caracteres extraños que rompan el renderizado.
-4. Genera al menos entre 6 y 10 flashcards y entre 4 y 6 preguntas de quiz de alta calidad para autoevaluación.
-5. Devuelve EXCLUSIVAMENTE el JSON.
-"""
+            "video_id": video_id,
+            "title": meta.get("title", f"Video {video_id}"),
+            "thumbnail": meta.get("thumbnail", ""),
+            "error": transcript_res.get("error", "No se encontraron subtítulos para este video.")
+        }), 400
+        
+    return jsonify({
+        "success": True,
+        "video_id": video_id,
+        "title": meta.get("title", f"Video {video_id}"),
+        "thumbnail": meta.get("thumbnail", ""),
+        "full_text": transcript_res.get("full_text", ""),
+        "timed_text": transcript_res.get("timed_text", ""),
+        "duration_seconds": transcript_res.get("duration_seconds", 0)
+    })
 
 @app.route('/api/demo', methods=['GET'])
 def get_demo_notes():
@@ -536,344 +386,6 @@ def get_demo_notes():
         ]
     }
     return jsonify({"success": True, "data": sample})
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/api/status', methods=['GET'])
-def check_status():
-    api_key = get_api_key()
-    return jsonify({
-        "status": "ready",
-        "has_api_key": True,
-        "is_free_gemini": True,
-        "engine": "Gemini Flash (Gratuito)",
-        "message": "Servicio de Inteligencia Artificial activo sin requerir configuración."
-    })
-
-@app.route('/api/health-gemini', methods=['GET'])
-def health_gemini():
-    """Diagnostic endpoint to verify server-side GEMINI_API_KEY connectivity in under 2 seconds."""
-    server_key = os.environ.get('GEMINI_API_KEY', '').strip(" \t\n\r'\"")
-    if not server_key:
-        return jsonify({
-            "success": False,
-            "has_server_key": False,
-            "error": "No hay variable GEMINI_API_KEY configurada en el servidor."
-        }), 400
-
-    masked_key = f"{server_key[:8]}...{server_key[-4:]}" if len(server_key) > 12 else "***"
-    import time
-    start_t = time.time()
-    try:
-        from google import genai
-        client = genai.Client(api_key=server_key)
-        resp = client.models.generate_content(
-            model=GeminiConfig.DEFAULT_MODEL,
-            contents="Responde solo la palabra: OK"
-        )
-        elapsed = round((time.time() - start_t) * 1000)
-        return jsonify({
-            "success": True,
-            "has_server_key": True,
-            "masked_key": masked_key,
-            "model": GeminiConfig.DEFAULT_MODEL,
-            "gemini_reply": resp.text.strip() if resp and resp.text else "",
-            "latency_ms": elapsed,
-            "status": "healthy"
-        })
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "has_server_key": True,
-            "masked_key": masked_key,
-            "error": str(e)
-        }), 400
-
-@app.route('/api/save-key', methods=['POST'])
-def save_key():
-    data = request.get_json() or {}
-    key = data.get('apiKey', '').strip()
-    if not key:
-        return jsonify({"success": False, "error": "La clave no puede estar vacía"}), 400
-        
-    try:
-        # Save to .env
-        env_lines = []
-        if env_path.exists():
-            with open(env_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if not line.startswith("GEMINI_API_KEY="):
-                        env_lines.append(line)
-        env_lines.append(f"GEMINI_API_KEY={key}\n")
-        with open(env_path, 'w', encoding='utf-8') as f:
-            f.writelines(env_lines)
-            
-        os.environ['GEMINI_API_KEY'] = key
-        return jsonify({"success": True, "message": "Clave guardada exitosamente"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/youtube-preview', methods=['POST'])
-def youtube_preview():
-    data = request.get_json() or {}
-    url = data.get('url', '')
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        return jsonify({"success": False, "error": "Enlace de YouTube no válido"}), 400
-        
-    meta = get_youtube_metadata(video_id)
-    meta["video_id"] = video_id
-    meta["success"] = True
-    return jsonify(meta)
-
-@app.route('/api/generate-notes', methods=['POST'])
-def generate_notes():
-    api_key, key_err = extract_and_validate_key(request.form)
-    if key_err:
-        return jsonify({
-            "success": False, 
-            "is_auth_error": True,
-            "error": key_err
-        }), 400
-
-    youtube_url = request.form.get('youtubeUrl', '').strip()
-    custom_instructions = request.form.get('instructions', '').strip()
-    depth_level = request.form.get('depth', 'completo')  # 'conciso', 'completo', 'exhaustivo'
-    
-    collected_sources = []
-    source_texts = []
-    multimodal_parts = []
-    video_metadata = None
-
-    # 1. Process YouTube videos if provided (supports multiple URLs)
-    raw_urls = request.form.getlist('youtubeUrls')
-    single_url = request.form.get('youtubeUrl', '').strip()
-    if single_url and single_url not in raw_urls:
-        raw_urls.append(single_url)
-
-    cleaned_urls = []
-    for u in raw_urls:
-        u = u.strip()
-        if u and u not in cleaned_urls:
-            cleaned_urls.append(u)
-
-    for idx, url in enumerate(cleaned_urls):
-        video_id = extract_youtube_id(url)
-        if not video_id:
-            return jsonify({"success": False, "error": f"El enlace '{url}' no es un video de YouTube válido."}), 400
-            
-        v_meta = get_youtube_metadata(video_id)
-        transcript_res = get_youtube_transcript(video_id)
-        
-        if transcript_res.get("success"):
-            collected_sources.append({
-                "type": "youtube",
-                "title": v_meta["title"],
-                "id": video_id,
-                "thumbnail": v_meta["thumbnail"],
-                "order": idx + 1,
-                "mode": "transcript"
-            })
-            source_texts.append(
-                f"=== FUENTE VIDEO DE YOUTUBE #{idx+1}: '{v_meta['title']}' ===\n"
-                f"Transcripción con marcas de tiempo:\n{transcript_res['timed_text']}"
-            )
-        else:
-            # Video does not have subtitles/CC available: seamless fallback to Gemini native multimodal video
-            try:
-                print(f"Video '{v_meta['title']}' ({video_id}) sin subtítulos CC. Usando comprensión audiovisual nativa de Gemini...")
-            except Exception:
-                pass
-            collected_sources.append({
-                "type": "youtube",
-                "title": v_meta["title"],
-                "id": video_id,
-                "thumbnail": v_meta["thumbnail"],
-                "order": idx + 1,
-                "mode": "multimodal"
-            })
-            multimodal_parts.append(
-                types.Part(file_data=types.FileData(file_uri=f"https://www.youtube.com/watch?v={video_id}"))
-            )
-            source_texts.append(
-                f"=== FUENTE VIDEO DE YOUTUBE #{idx+1} (PROCESAMIENTO AUDIOVISUAL NATIVO): '{v_meta['title']}' ===\n"
-                f"Analiza minuciosamente el video adjunto: comprende el audio, diálogo, narración, explicaciones y elementos visuales para sintetizar todo el contenido pedagógico."
-            )
-
-    # 2. Process uploaded PDF files if provided
-    uploaded_files = request.files.getlist('pdfFiles')
-    for file in uploaded_files:
-        if file and file.filename and file.filename.lower().endswith('.pdf'):
-            safe_name = secure_filename(file.filename)
-            save_path = UPLOAD_FOLDER / safe_name
-            file.save(save_path)
-            
-            pdf_res = extract_pdf_text(str(save_path))
-            if pdf_res["success"]:
-                collected_sources.append({
-                    "type": "pdf",
-                    "filename": safe_name,
-                    "pages": pdf_res["pages"]
-                })
-                source_texts.append(
-                    f"=== FUENTE DOCUMENTO PDF '{safe_name}' ({pdf_res['pages']} páginas) ===\n"
-                    f"{pdf_res['content']}"
-                )
-            else:
-                return jsonify({"success": False, "error": pdf_res["error"]}), 400
-
-    if not source_texts and not multimodal_parts:
-        return jsonify({"success": False, "error": "Debes proporcionar al menos un enlace de YouTube o un archivo PDF."}), 400
-
-    # Assemble User Prompt
-    depth_instructions = {
-        "conciso": "Nivel de profundidad: RESUMEN CONCISO. Enfócate en las ideas centrales, esquemas y conceptos primordiales.",
-        "completo": "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO. Desarrolla todos los temas con rigor, explicaciones paso a paso, ejemplos y fundamentos.",
-        "exhaustivo": "Nivel de profundidad: GUÍA EXHAUSTIVA DE ESTUDIO. Máximo nivel de detalle pedagógico, desglosando cada subtema, fórmula, demostración y casos prácticos."
-    }.get(depth_level, "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO.")
-
-    multi_source_hint = f"\nNOTA PEDAGÓGICA: Has recibido {len(source_texts)} fuentes distintas (pueden ser partes consecutivas de una clase o serie, o documentos complementarios). Sintetiza y unifica todo el material en un único Apunte Maestro armónico, integrando ordenadamente los contenidos de todas las partes sin redundancias.\n" if len(source_texts) > 1 else ""
-
-    user_prompt = f"""
-{depth_instructions}
-{multi_source_hint}
-{f"INSTRUCCIONES Y ENFOQUE ESPECIAL DEL ESTUDIANTE: {custom_instructions}" if custom_instructions else ""}
-
-A continuación tienes el material fuente para analizar y sintetizar:
-
-{"---".join(source_texts)}
-
-Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
-"""
-
-    # Assemble contents payload including any multimodal video parts
-    contents_payload = []
-    for part in multimodal_parts:
-        contents_payload.append(part)
-    contents_payload.append(types.Part(text=user_prompt))
-
-    # Call Gemini API using official google-genai SDK
-    try:
-        from google import genai
-        
-        client = genai.Client(api_key=api_key)
-        
-        config = types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=GeminiConfig.TEMPERATURE,
-            response_mime_type=GeminiConfig.RESPONSE_MIME_TYPE
-        )
-
-        import time
-        # Robust model fallback list from central config
-        models_to_try = GeminiConfig.FALLBACK_MODELS
-        response = None
-        last_error = None
-        
-        for model_name in models_to_try:
-            for attempt in range(2):
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents_payload,
-                        config=config
-                    )
-                    if response and response.text:
-                        break
-                except Exception as merr:
-                    last_error = merr
-                    err_str = str(merr)
-                    try:
-                        print(f"Model {model_name} attempt {attempt+1} failed: {err_str[:120]}")
-                    except Exception:
-                        pass
-                    # If error was related to video URL or multimodal part, retry prompt with text only
-                    if multimodal_parts:
-                        try:
-                            fallback_contents = [types.Part(text=user_prompt)]
-                            response = client.models.generate_content(
-                                model=model_name,
-                                contents=fallback_contents,
-                                config=config
-                            )
-                            if response and response.text:
-                                break
-                        except Exception:
-                            pass
-                    if "503" in err_str or "high demand" in err_str or "UNAVAILABLE" in err_str:
-                        time.sleep(2)
-                    else:
-                        break
-            if response and response.text:
-                break
-                
-        if not response or not response.text:
-            raise last_error or Exception("No se obtuvo respuesta de ninguno de los modelos de Gemini.")
-
-        raw_response = response.text.strip()
-        
-        # Clean potential markdown wrapping if present
-        if raw_response.startswith("```json"):
-            raw_response = raw_response[7:]
-        if raw_response.startswith("```"):
-            raw_response = raw_response[3:]
-        if raw_response.endswith("```"):
-            raw_response = raw_response[:-3]
-        raw_response = raw_response.strip()
-
-        try:
-            result_data = robust_parse_json(raw_response)
-        except Exception as pe:
-            try:
-                print(f"Error parsing JSON from Gemini: {pe}")
-            except Exception:
-                pass
-            return jsonify({
-                "success": False,
-                "error": f"La IA generó una respuesta pero ocurrió un problema al estructurar los datos ({str(pe)}). Intenta nuevamente.",
-                "raw": raw_response[:400]
-            }), 500
-
-        result_data["sources"] = collected_sources
-        result_data["video_metadata"] = video_metadata
-        
-        return jsonify({
-            "success": True,
-            "data": result_data
-        })
-
-    except Exception as e:
-        safe_msg = str(e)
-        try:
-            print(f"Error calling Gemini API: {safe_msg}")
-        except Exception:
-            pass
-
-        if "401" in safe_msg or "UNAUTHENTICATED" in safe_msg or "API_KEY_SERVICE_BLOCKED" in safe_msg or "API_KEY_INVALID" in safe_msg:
-            return jsonify({
-                "success": False,
-                "is_auth_error": True,
-                "error": "Google rechazó la clave de API (no válida, bloqueada o revocada). Asegúrate de copiar tu clave activa desde https://aistudio.google.com/app/apikey."
-            }), 401
-
-        if "429" in safe_msg or "RESOURCE_EXHAUSTED" in safe_msg:
-            return jsonify({
-                "success": False,
-                "error": "Se alcanzó el límite de solicitudes por minuto de la API gratuita de Gemini. Espera 1 minuto y vuelve a intentar, o carga tu propia clave en la barra superior."
-            }), 429
-
-        if "503" in safe_msg or "UNAVAILABLE" in safe_msg or "high demand" in safe_msg:
-            return jsonify({
-                "success": False,
-                "error": "Los servidores de Google Gemini están experimentando alta demanda momentánea. Por favor intenta nuevamente en unos segundos."
-            }), 503
-
-        return jsonify({
-            "success": False,
-            "error": f"Error al procesar el apunte con la IA: {safe_msg}"
-        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
