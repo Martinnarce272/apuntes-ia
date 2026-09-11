@@ -62,11 +62,11 @@ class TestApuntesIA(unittest.TestCase):
             self.assertEqual(key, "AIzaSyMockKeyForValidationPurposes12345")
 
     def test_extract_and_validate_key_accepts_aq_key_format(self):
-        with app.test_request_context('/', headers={'X-Gemini-Api-Key': ' " AQ.Ab8RN6L4mMockValidationKeyLongEnough12345 " '}):
+        with app.test_request_context('/', headers={'X-Gemini-Api-Key': ' " AQ.MockTestValidationKeyLongEnough99999 " '}):
             from app import extract_and_validate_key
             key, err = extract_and_validate_key()
             self.assertIsNone(err)
-            self.assertEqual(key, "AQ.Ab8RN6L4mMockValidationKeyLongEnough12345")
+            self.assertEqual(key, "AQ.MockTestValidationKeyLongEnough99999")
 
     def test_extract_and_validate_key_too_short(self):
         with app.test_request_context('/', headers={'X-Gemini-Api-Key': 'short_key'}):
