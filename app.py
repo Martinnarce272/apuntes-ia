@@ -78,10 +78,28 @@ def get_youtube_metadata(video_id):
     }
 
 def get_youtube_caption_tracks(video_id):
-    """Retrieve available subtitle tracks and signed baseUrls via YouTube Android Player API without scraping."""
+    """Retrieve available subtitle tracks and signed baseUrls via YouTube Innertube API without scraping."""
     debug_info = {}
     try:
-        url = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+        })
+
+        # Try to obtain a visitor token from YouTube
+        visitor_token = ""
+        try:
+            r_home = session.get("https://www.youtube.com", timeout=4)
+            m_vis = re.search(r'"VISITOR_DATA":\s*"([^"]+)"', r_home.text)
+            if m_vis:
+                visitor_token = m_vis.group(1)
+        except Exception:
+            pass
+
+        key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+        url = f"https://www.youtube.com/youtubei/v1/player?key={key}"
+
         payload = {
             "context": {
                 "client": {
@@ -100,12 +118,18 @@ def get_youtube_caption_tracks(video_id):
             },
             "videoId": video_id
         }
+
+        if visitor_token:
+            payload["context"]["client"]["visitorData"] = visitor_token
+
         headers = {
             "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
             "Content-Type": "application/json"
         }
+        if visitor_token:
+            headers["X-Goog-Visitor-Id"] = visitor_token
 
-        resp = requests.post(url, json=payload, headers=headers, timeout=8)
+        resp = session.post(url, json=payload, headers=headers, timeout=8)
         debug_info["status_code"] = resp.status_code
         if resp.status_code == 200:
             data = resp.json()
@@ -126,6 +150,7 @@ def get_youtube_caption_tracks(video_id):
     except Exception as e:
         debug_info["exception"] = str(e)
     return [], debug_info
+
 
 
 @app.route('/')
@@ -185,6 +210,13 @@ def youtube_tracks():
     })
 
 
+
+@app.route('/api/test-log', methods=['POST'])
+def test_log():
+    data = request.get_json(force=True, silent=True) or {}
+    with open('scratch/browser_result.json', 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+    return jsonify({"ok": True})
 
 @app.route('/api/demo', methods=['GET'])
 def get_demo_notes():
