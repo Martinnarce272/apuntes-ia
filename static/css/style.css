@@ -263,6 +263,25 @@ button {
     box-shadow: 0 0 8px var(--accent-emerald);
 }
 
+.ai-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    color: #6ee7b7;
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 0.45rem 0.9rem;
+    border-radius: var(--radius-full);
+    letter-spacing: 0.02em;
+}
+
+.ai-status-pill i {
+    color: #34d399;
+    font-size: 0.88rem;
+}
+
 /* ==========================================================================
    CARDS & GLASSMORPHISM
    ========================================================================== */

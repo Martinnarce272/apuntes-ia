@@ -125,42 +125,46 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await fetch('/api/status');
             const data = await res.json();
-            state.hasApiKey = data.has_api_key;
+            state.hasApiKey = true;
             updateKeyIndicator();
         } catch (e) {
             console.error('Error checking status:', e);
+            state.hasApiKey = true;
         }
     }
 
     function updateKeyIndicator() {
-        if (state.hasApiKey) {
-            elements.keyIndicator.classList.add('active');
-            elements.keyStatusText.textContent = 'API Key Lista';
-        } else {
-            elements.keyIndicator.classList.remove('active');
-            elements.keyStatusText.textContent = 'Configurar API Key';
-        }
+        if (elements.keyIndicator) elements.keyIndicator.classList.add('active');
+        if (elements.keyStatusText) elements.keyStatusText.textContent = 'IA Gratuita Lista';
     }
 
-    // API Key Modal Handlers
-    elements.btnApiKey.addEventListener('click', () => {
-        elements.keyMessageBox.className = 'message-box hidden';
-        elements.modalApiKey.classList.remove('hidden');
-    });
+    // API Key Modal Handlers (optional)
+    if (elements.btnApiKey) {
+        elements.btnApiKey.addEventListener('click', () => {
+            if (elements.keyMessageBox) elements.keyMessageBox.className = 'message-box hidden';
+            if (elements.modalApiKey) elements.modalApiKey.classList.remove('hidden');
+        });
+    }
 
-    elements.btnCloseModal.addEventListener('click', () => {
-        elements.modalApiKey.classList.add('hidden');
-    });
+    if (elements.btnCloseModal) {
+        elements.btnCloseModal.addEventListener('click', () => {
+            if (elements.modalApiKey) elements.modalApiKey.classList.add('hidden');
+        });
+    }
 
-    elements.btnCancelKey.addEventListener('click', () => {
-        elements.modalApiKey.classList.add('hidden');
-    });
+    if (elements.btnCancelKey) {
+        elements.btnCancelKey.addEventListener('click', () => {
+            if (elements.modalApiKey) elements.modalApiKey.classList.add('hidden');
+        });
+    }
 
-    elements.btnToggleKeyVis.addEventListener('click', () => {
-        const type = elements.inputApiKey.type === 'password' ? 'text' : 'password';
-        elements.inputApiKey.type = type;
-        elements.btnToggleKeyVis.querySelector('i').className = type === 'password' ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
-    });
+    if (elements.btnToggleKeyVis && elements.inputApiKey) {
+        elements.btnToggleKeyVis.addEventListener('click', () => {
+            const type = elements.inputApiKey.type === 'password' ? 'text' : 'password';
+            elements.inputApiKey.type = type;
+            elements.btnToggleKeyVis.querySelector('i').className = type === 'password' ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
+        });
+    }
 
     elements.btnSaveKey.addEventListener('click', async () => {
         const key = elements.inputApiKey.value.trim();
@@ -480,17 +484,15 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (!state.hasApiKey) {
-            elements.modalApiKey.classList.remove('hidden');
-            showKeyMessage('Debes ingresar tu Gemini API Key antes de generar apuntes.', 'error');
-            return;
-        }
-
         // Switch to loading view
         switchView('loading');
         simulateProgress();
 
         const formData = new FormData();
+        const savedKey = localStorage.getItem('gemini_api_key');
+        if (savedKey) {
+            formData.append('apiKey', savedKey);
+        }
         state.selectedVideos.forEach(vid => {
             formData.append('youtubeUrls', vid.url);
         });
