@@ -79,6 +79,7 @@ def get_youtube_metadata(video_id):
 
 def get_youtube_caption_tracks(video_id):
     """Retrieve available subtitle tracks and signed baseUrls via YouTube Android Player API without scraping."""
+    debug_info = {}
     try:
         url = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
         payload = {
@@ -90,10 +91,16 @@ def get_youtube_caption_tracks(video_id):
             },
             "videoId": video_id
         }
-        resp = requests.post(url, json=payload, timeout=8)
+        headers = {
+            "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
+            "Content-Type": "application/json"
+        }
+        resp = requests.post(url, json=payload, headers=headers, timeout=8)
+        debug_info["status_code"] = resp.status_code
         if resp.status_code == 200:
             data = resp.json()
             raw_tracks = data.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
+            debug_info["raw_tracks_count"] = len(raw_tracks)
             tracks = []
             for t in raw_tracks:
                 name = t.get("name", {}).get("runs", [{}])[0].get("text", "Subtítulos")
@@ -103,10 +110,13 @@ def get_youtube_caption_tracks(video_id):
                     "base_url": t.get("baseUrl", ""),
                     "is_auto": t.get("kind") == "asr" or "auto" in name.lower()
                 })
-            return tracks
+            return tracks, debug_info
+        else:
+            debug_info["resp_text"] = resp.text[:200]
     except Exception as e:
-        print(f"Error fetching caption tracks for {video_id}: {e}")
-    return []
+        debug_info["exception"] = str(e)
+    return [], debug_info
+
 
 @app.route('/')
 def index():
@@ -130,11 +140,12 @@ def youtube_preview():
         return jsonify({"success": False, "error": "Enlace de YouTube no válido"}), 400
         
     meta = get_youtube_metadata(video_id)
-    tracks = get_youtube_caption_tracks(video_id)
+    tracks, debug_info = get_youtube_caption_tracks(video_id)
     meta["video_id"] = video_id
     meta["success"] = True
     meta["caption_tracks"] = tracks
     meta["has_captions"] = len(tracks) > 0
+    meta["debug"] = debug_info
     return jsonify(meta)
 
 @app.route('/api/youtube-tracks', methods=['GET', 'POST'])
@@ -152,15 +163,17 @@ def youtube_tracks():
         return jsonify({"success": False, "error": "Enlace o ID de YouTube no válido."}), 400
         
     meta = get_youtube_metadata(video_id)
-    tracks = get_youtube_caption_tracks(video_id)
+    tracks, debug_info = get_youtube_caption_tracks(video_id)
     return jsonify({
         "success": True,
         "video_id": video_id,
         "title": meta.get("title", f"Video {video_id}"),
         "thumbnail": meta.get("thumbnail", ""),
         "has_captions": len(tracks) > 0,
-        "caption_tracks": tracks
+        "caption_tracks": tracks,
+        "debug": debug_info
     })
+
 
 
 @app.route('/api/demo', methods=['GET'])
