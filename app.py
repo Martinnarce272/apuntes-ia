@@ -86,7 +86,16 @@ def get_youtube_caption_tracks(video_id):
             "context": {
                 "client": {
                     "clientName": "ANDROID",
-                    "clientVersion": "20.10.38"
+                    "clientVersion": "20.10.38",
+                    "androidSdkVersion": 34,
+                    "hl": "es",
+                    "gl": "AR"
+                }
+            },
+            "playbackContext": {
+                "contentPlaybackContext": {
+                    "html5Preference": "HTML5_PREF_WANTS",
+                    "signatureTimestamp": 19800
                 }
             },
             "videoId": video_id
@@ -95,6 +104,7 @@ def get_youtube_caption_tracks(video_id):
             "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
             "Content-Type": "application/json"
         }
+
         resp = requests.post(url, json=payload, headers=headers, timeout=8)
         debug_info["status_code"] = resp.status_code
         if resp.status_code == 200:
