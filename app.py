@@ -79,38 +79,56 @@ def get_youtube_metadata(video_id):
 
 def get_youtube_transcript(video_id):
     """Extract transcript with timestamps from YouTube supporting v1.x and v0.x APIs."""
+    debug_steps = []
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         raw_data = None
 
         # 1. Modern v1.x API
         if hasattr(YouTubeTranscriptApi, 'fetch') or hasattr(YouTubeTranscriptApi, 'list'):
+            debug_steps.append("detected_v1")
             api = YouTubeTranscriptApi()
             try:
+                debug_steps.append("try_fetch")
                 fetched = api.fetch(video_id, languages=['es', 'es-419', 'es-ES', 'es-AR', 'en'])
                 raw_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-            except Exception:
-                tl = api.list(video_id)
-                for t in tl:
-                    fetched = t.fetch()
-                    raw_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                    if raw_data:
-                        break
+                debug_steps.append(f"fetch_ok_{len(raw_data) if raw_data else 0}")
+            except Exception as e_fetch:
+                debug_steps.append(f"fetch_err:{type(e_fetch).__name__}:{e_fetch}")
+                try:
+                    tl = api.list(video_id)
+                    debug_steps.append("list_ok")
+                    for t in tl:
+                        lang = getattr(t, 'language_code', 'unknown')
+                        debug_steps.append(f"t_{lang}")
+                        fetched = t.fetch()
+                        raw_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
+                        if raw_data:
+                            debug_steps.append(f"t_ok_{len(raw_data)}")
+                            break
+                except Exception as e_list:
+                    debug_steps.append(f"list_err:{type(e_list).__name__}:{e_list}")
+                    raise e_list
         # 2. Legacy v0.x API
         elif hasattr(YouTubeTranscriptApi, 'get_transcript'):
+            debug_steps.append("detected_v0")
             try:
                 raw_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['es', 'es-419', 'es-ES', 'en'])
-            except Exception:
+            except Exception as e_v0:
+                debug_steps.append(f"v0_err:{e_v0}")
                 if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
                     tl = YouTubeTranscriptApi.list_transcripts(video_id)
                     for item in tl:
                         raw_data = item.fetch()
                         if raw_data:
                             break
+        else:
+            debug_steps.append("no_known_api")
 
         if not raw_data:
             return {
                 "success": False,
+                "debug": " | ".join(debug_steps),
                 "error": "No se encontraron subtítulos disponibles para este video en YouTube. Asegúrate de que el video tenga subtítulos activados (CC)."
             }
 
@@ -172,6 +190,7 @@ def check_status():
     return jsonify({
         "status": "ready",
         "engine": "Puter.js (Client-Side AI)",
+        "version": "1.2.0",
         "message": "Servicio activo. La IA corre en el navegador mediante Puter.js sin depender de claves de servidor."
     })
 
@@ -211,6 +230,7 @@ def youtube_transcript():
             "video_id": video_id,
             "title": meta.get("title", f"Video {video_id}"),
             "thumbnail": meta.get("thumbnail", ""),
+            "debug": transcript_res.get("debug"),
             "error": transcript_res.get("error", "No se encontraron subtítulos para este video.")
         }), 400
         
