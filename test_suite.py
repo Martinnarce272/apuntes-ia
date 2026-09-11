@@ -61,13 +61,12 @@ class TestApuntesIA(unittest.TestCase):
             self.assertIsNone(err)
             self.assertEqual(key, "AIzaSyMockKeyForValidationPurposes12345")
 
-    def test_extract_and_validate_key_blocks_aq_token(self):
-        with app.test_request_context('/', headers={'X-Gemini-Api-Key': 'AQ.Ab8RN6LL_test_token_service_blocked'}):
+    def test_extract_and_validate_key_accepts_aq_key_format(self):
+        with app.test_request_context('/', headers={'X-Gemini-Api-Key': ' " AQ.Ab8RN6L4mMockValidationKeyLongEnough12345 " '}):
             from app import extract_and_validate_key
             key, err = extract_and_validate_key()
-            self.assertIsNone(key)
-            self.assertIn("API_KEY_SERVICE_BLOCKED", err)
-            self.assertIn("aistudio.google.com/app/apikey", err)
+            self.assertIsNone(err)
+            self.assertEqual(key, "AQ.Ab8RN6L4mMockValidationKeyLongEnough12345")
 
     def test_extract_and_validate_key_too_short(self):
         with app.test_request_context('/', headers={'X-Gemini-Api-Key': 'short_key'}):

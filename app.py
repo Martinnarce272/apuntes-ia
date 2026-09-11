@@ -75,11 +75,10 @@ def robust_parse_json(text):
 
 class GeminiConfig:
     """Centralized configuration for Gemini AI integration."""
-    DEFAULT_MODEL = "gemini-2.5-flash"
+    DEFAULT_MODEL = "gemini-3.6-flash"
     FALLBACK_MODELS = [
-        "gemini-2.5-flash",
-        "gemini-3.7-flash",
         "gemini-3.6-flash",
+        "gemini-3.7-flash",
         "gemini-flash-latest"
     ]
     TEMPERATURE = 0.3
@@ -114,14 +113,6 @@ def extract_and_validate_key(request_data=None):
         
     # Sanitize key: strip whitespaces, newlines, single and double quotes
     clean_key = raw_key.strip(" \t\n\r'\"")
-    
-    # Catch blocked GCP token format (AQ...)
-    if clean_key.startswith("AQ."):
-        return None, (
-            "La clave ingresada (que empieza con 'AQ.') es un token de Google Cloud que tiene bloqueada la API "
-            f"de Gemini (API_KEY_SERVICE_BLOCKED). Tu clave oficial 100% gratuita de Gemini la creas en {GeminiConfig.KEY_HELP_URL} "
-            "(las claves oficiales de Gemini siempre empiezan con 'AIzaSy...')."
-        )
         
     if len(clean_key) < 20:
         return None, (
@@ -809,7 +800,7 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
             return jsonify({
                 "success": False,
                 "is_auth_error": True,
-                "error": "Google rechazó la clave (401 UNAUTHENTICATED: API_KEY_SERVICE_BLOCKED). Tu clave oficial 100% gratuita de Gemini la creas en https://aistudio.google.com/app/apikey (siempre empieza con 'AIzaSy')."
+                "error": "Google rechazó la clave (401 UNAUTHENTICATED). Asegúrate de que tu clave esté activa y copiada correctamente desde https://aistudio.google.com/app/apikey."
             }), 401
 
         return jsonify({

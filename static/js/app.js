@@ -123,7 +123,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --------------------------------------------------------------------------
     async function checkStatus() {
         const localKey = localStorage.getItem('gemini_api_key');
-        if (localKey && localKey.startsWith('AIzaSy')) {
+        if (localKey && localKey.length >= 20) {
             state.hasApiKey = true;
         } else {
             state.hasApiKey = false;
@@ -133,7 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateKeyIndicator() {
         const localKey = localStorage.getItem('gemini_api_key');
-        if (localKey && localKey.startsWith('AIzaSy')) {
+        if (localKey && localKey.length >= 20) {
             if (elements.keyIndicator) elements.keyIndicator.classList.add('active');
             if (elements.keyStatusText) elements.keyStatusText.textContent = 'Clave Lista';
         } else {
@@ -177,8 +177,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (key.startsWith('AQ.')) {
-            showKeyMessage("Esta clave empieza con 'AQ.' y fue bloqueada por Google (API_KEY_SERVICE_BLOCKED). Tu clave gratuita de Gemini debe empezar con 'AIzaSy'. Presiona el botón violeta de arriba para abrir Google AI Studio.", 'error');
+        if (key.length < 20) {
+            showKeyMessage('La clave ingresada parece incompleta o demasiado corta. Asegúrate de copiarla entera.', 'error');
             return;
         }
 
