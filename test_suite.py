@@ -96,6 +96,14 @@ class TestApuntesIA(unittest.TestCase):
         self.assertFalse(data['has_captions'])
         self.assertEqual(len(data['caption_tracks']), 0)
 
+    def test_youtube_audio_streaming(self):
+        # Test direct audio stream endpoint
+        res = self.client.get('/api/youtube-audio?videoId=0XoS8EUrG3k')
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('audio/', res.headers.get('Content-Type', ''))
+        chunk = next(res.response)
+        self.assertGreater(len(chunk), 0)
+
 if __name__ == '__main__':
     unittest.main()
 

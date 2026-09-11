@@ -115,25 +115,14 @@
                                 <!-- Populated dynamically with video cards -->
                             </div>
 
-                            <!-- Non-blocking fallback banner when a video has no captions -->
-                            <div id="yt-fallback-banner" class="yt-fallback-banner hidden">
-                                <div class="fallback-banner-header">
-                                    <i class="fa-solid fa-triangle-exclamation" style="color: #f59e0b; font-size: 1.2rem; flex-shrink: 0; margin-top: 2px;"></i>
+                            <!-- Reassuring banner when a video has no pre-existing captions -->
+                            <div id="yt-fallback-banner" class="yt-fallback-banner hidden" style="background: rgba(99, 102, 241, 0.12); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 14px 16px; margin-top: 12px;">
+                                <div class="fallback-banner-header" style="display: flex; gap: 12px; align-items: flex-start;">
+                                    <i class="fa-solid fa-wand-magic-sparkles" style="color: #818cf8; font-size: 1.25rem; flex-shrink: 0; margin-top: 2px;"></i>
                                     <div>
-                                        <h4 style="margin: 0; font-size: 0.92rem; font-weight: 600; color: #fde68a;">Este video no tiene subtítulos disponibles en YouTube</h4>
-                                        <p style="margin: 3px 0 0; font-size: 0.82rem; color: #cbd5e1; line-height: 1.4;">Puedes continuar generando tu apunte subiendo el audio de la clase, el PDF del tema o pegando notas de clase.</p>
+                                        <h4 style="margin: 0; font-size: 0.92rem; font-weight: 600; color: #c7d2fe;">Transcripción por Audio IA activada</h4>
+                                        <p style="margin: 4px 0 0; font-size: 0.83rem; color: #cbd5e1; line-height: 1.45;">Este video no incluye subtítulos en YouTube, pero no te preocupes: el sistema extraerá su audio y la IA lo transcribirá automáticamente al generar tus apuntes.</p>
                                     </div>
-                                </div>
-                                <div class="fallback-banner-actions">
-                                    <button type="button" id="btn-fallback-audio" class="btn-fallback-chip">
-                                        <i class="fa-solid fa-microphone-lines"></i> Subir Audio (.mp3)
-                                    </button>
-                                    <button type="button" id="btn-fallback-pdf" class="btn-fallback-chip">
-                                        <i class="fa-solid fa-file-pdf"></i> Subir PDF
-                                    </button>
-                                    <button type="button" id="btn-fallback-notes" class="btn-fallback-chip">
-                                        <i class="fa-solid fa-align-left"></i> Pegar Notas
-                                    </button>
                                 </div>
                             </div>
                         </div>

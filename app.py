@@ -4,7 +4,7 @@ import re
 import json
 import requests
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 
 # Ensure UTF-8 output encoding on Windows console
 if hasattr(sys.stdout, 'reconfigure'):
@@ -77,78 +77,82 @@ def get_youtube_metadata(video_id):
         "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
     }
 
-def get_youtube_caption_tracks(video_id):
-    """Retrieve available subtitle tracks and signed baseUrls via YouTube Innertube API without scraping."""
-    debug_info = {}
+import yt_dlp
+
+def get_youtube_video_data(video_id):
+    """Retrieve video metadata, subtitle tracks, and audio streaming info via yt-dlp."""
+    ydl_opts = {
+        'skip_download': True,
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False
+    }
+    url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
-        })
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            subs = info.get('subtitles', {})
+            auto_subs = info.get('automatic_captions', {})
+            caption_tracks = []
+            
+            # Prioritize Spanish, then English
+            for lang_code in ['es', 'es-419', 'es-ES', 'es-US', 'en', 'en-US']:
+                track_list = subs.get(lang_code) or auto_subs.get(lang_code)
+                if track_list:
+                    # Prefer srv1 for clean XML text nodes
+                    pref = next((s['url'] for s in track_list if s.get('ext') == 'srv1'), None)
+                    if not pref:
+                        pref = next((s['url'] for s in track_list if s.get('ext') in ['srv3', 'vtt']), track_list[0]['url'])
+                    caption_tracks.append({
+                        "name": f"Español ({lang_code})" if lang_code.startswith('es') else f"Inglés ({lang_code})",
+                        "language_code": lang_code,
+                        "base_url": pref,
+                        "is_auto": lang_code in auto_subs and lang_code not in subs
+                    })
+            
+            # If no matches above, add whatever subtitles exist
+            if not caption_tracks:
+                for lang_code, track_list in list(subs.items())[:3] + list(auto_subs.items())[:3]:
+                    pref = next((s['url'] for s in track_list if s.get('ext') in ['srv1', 'srv3']), track_list[0]['url'])
+                    caption_tracks.append({
+                        "name": f"Subtítulos ({lang_code})",
+                        "language_code": lang_code,
+                        "base_url": pref,
+                        "is_auto": lang_code in auto_subs and lang_code not in subs
+                    })
+            
+            # Extract lightweight audio format for Speech-to-Text
+            formats = info.get('formats', [])
+            audio_formats = [f for f in formats if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('url')]
+            selected_audio = None
+            if audio_formats:
+                selected_audio = next((f for f in audio_formats if f.get('format_id') in ['139', '250', '249']), audio_formats[0])
+            elif formats:
+                formats_with_audio = [f for f in formats if f.get('acodec') != 'none' and f.get('url')]
+                if formats_with_audio:
+                    selected_audio = formats_with_audio[0]
 
-        # Try to obtain a visitor token from YouTube
-        visitor_token = ""
-        try:
-            r_home = session.get("https://www.youtube.com", timeout=4)
-            m_vis = re.search(r'"VISITOR_DATA":\s*"([^"]+)"', r_home.text)
-            if m_vis:
-                visitor_token = m_vis.group(1)
-        except Exception:
-            pass
-
-        key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-        url = f"https://www.youtube.com/youtubei/v1/player?key={key}"
-
-        payload = {
-            "context": {
-                "client": {
-                    "clientName": "ANDROID",
-                    "clientVersion": "20.10.38",
-                    "androidSdkVersion": 34,
-                    "hl": "es",
-                    "gl": "AR"
-                }
-            },
-            "playbackContext": {
-                "contentPlaybackContext": {
-                    "html5Preference": "HTML5_PREF_WANTS",
-                    "signatureTimestamp": 19800
-                }
-            },
-            "videoId": video_id
-        }
-
-        if visitor_token:
-            payload["context"]["client"]["visitorData"] = visitor_token
-
-        headers = {
-            "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
-            "Content-Type": "application/json"
-        }
-        if visitor_token:
-            headers["X-Goog-Visitor-Id"] = visitor_token
-
-        resp = session.post(url, json=payload, headers=headers, timeout=8)
-        debug_info["status_code"] = resp.status_code
-        if resp.status_code == 200:
-            data = resp.json()
-            raw_tracks = data.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
-            debug_info["raw_tracks_count"] = len(raw_tracks)
-            tracks = []
-            for t in raw_tracks:
-                name = t.get("name", {}).get("runs", [{}])[0].get("text", "Subtítulos")
-                tracks.append({
-                    "name": name,
-                    "language_code": t.get("languageCode", "es"),
-                    "base_url": t.get("baseUrl", ""),
-                    "is_auto": t.get("kind") == "asr" or "auto" in name.lower()
-                })
-            return tracks, debug_info
-        else:
-            debug_info["resp_text"] = resp.text[:200]
+            return {
+                "title": info.get('title', f"Video {video_id}"),
+                "author": info.get('uploader', 'YouTube'),
+                "thumbnail": info.get('thumbnail', f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
+                "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+                "caption_tracks": caption_tracks,
+                "has_captions": len(caption_tracks) > 0,
+                "has_audio": selected_audio is not None,
+                "audio_url": selected_audio.get('url') if selected_audio else None,
+                "audio_headers": selected_audio.get('http_headers', {}) if selected_audio else {},
+                "audio_format_id": selected_audio.get('format_id') if selected_audio else None,
+                "audio_ext": selected_audio.get('ext', 'm4a') if selected_audio else 'm4a'
+            }, {"status": "ok"}
     except Exception as e:
-        debug_info["exception"] = str(e)
+        return None, {"error": str(e)}
+
+def get_youtube_caption_tracks(video_id):
+    """Retrieve available subtitle tracks and signed baseUrls."""
+    data, debug_info = get_youtube_video_data(video_id)
+    if data and data.get("caption_tracks"):
+        return data["caption_tracks"], debug_info
     return [], debug_info
 
 
@@ -174,12 +178,20 @@ def youtube_preview():
     if not video_id:
         return jsonify({"success": False, "error": "Enlace de YouTube no válido"}), 400
         
+    vdata, debug_info = get_youtube_video_data(video_id)
+    if vdata:
+        vdata["video_id"] = video_id
+        vdata["success"] = True
+        vdata["debug"] = debug_info
+        return jsonify(vdata)
+
+    # Fallback to oEmbed if yt-dlp failed
     meta = get_youtube_metadata(video_id)
-    tracks, debug_info = get_youtube_caption_tracks(video_id)
     meta["video_id"] = video_id
     meta["success"] = True
-    meta["caption_tracks"] = tracks
-    meta["has_captions"] = len(tracks) > 0
+    meta["caption_tracks"] = []
+    meta["has_captions"] = False
+    meta["has_audio"] = False
     meta["debug"] = debug_info
     return jsonify(meta)
 
@@ -197,17 +209,70 @@ def youtube_tracks():
     if not video_id:
         return jsonify({"success": False, "error": "Enlace o ID de YouTube no válido."}), 400
         
+    vdata, debug_info = get_youtube_video_data(video_id)
+    if vdata:
+        return jsonify({
+            "success": True,
+            "video_id": video_id,
+            "title": vdata.get("title", f"Video {video_id}"),
+            "thumbnail": vdata.get("thumbnail", ""),
+            "has_captions": vdata.get("has_captions", False),
+            "has_audio": vdata.get("has_audio", False),
+            "caption_tracks": vdata.get("caption_tracks", []),
+            "debug": debug_info
+        })
+
     meta = get_youtube_metadata(video_id)
-    tracks, debug_info = get_youtube_caption_tracks(video_id)
     return jsonify({
         "success": True,
         "video_id": video_id,
         "title": meta.get("title", f"Video {video_id}"),
         "thumbnail": meta.get("thumbnail", ""),
-        "has_captions": len(tracks) > 0,
-        "caption_tracks": tracks,
+        "has_captions": False,
+        "has_audio": False,
+        "caption_tracks": [],
         "debug": debug_info
     })
+
+@app.route('/api/youtube-audio', methods=['GET'])
+def youtube_audio():
+    """Stream audio of YouTube video directly to client for AI Speech-to-Text transcription."""
+    video_id = extract_youtube_id(request.args.get('url') or request.args.get('videoId') or '')
+    if not video_id:
+        return jsonify({"success": False, "error": "ID o enlace de video no válido."}), 400
+        
+    vdata, debug_info = get_youtube_video_data(video_id)
+    if not vdata or not vdata.get("audio_url"):
+        return jsonify({"success": False, "error": "No se pudo obtener la pista de audio de este video de YouTube.", "debug": debug_info}), 404
+
+    audio_url = vdata["audio_url"]
+    audio_headers = vdata.get("audio_headers", {})
+    ext = vdata.get("audio_ext", "m4a")
+    content_type = "audio/webm" if ext == "webm" else "audio/mp4"
+
+    def stream_audio():
+        # Stream audio up to ~24 MB (under Puter.js 25MB speech2txt limit)
+        req_headers = dict(audio_headers)
+        req_headers["Range"] = "bytes=0-24999999"
+        try:
+            with requests.get(audio_url, headers=req_headers, stream=True, timeout=25) as r:
+                if r.status_code in [200, 206]:
+                    for chunk in r.iter_content(chunk_size=65536):
+                        if chunk:
+                            yield chunk
+                else:
+                    logger.error(f"YouTube audio stream returned HTTP status {r.status_code}")
+        except Exception as e:
+            logger.error(f"Error streaming audio from YouTube: {e}")
+
+    return Response(
+        stream_with_context(stream_audio()),
+        content_type=content_type,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Content-Disposition": f'attachment; filename="youtube_{video_id}.{ext}"'
+        }
+    )
 
 
 

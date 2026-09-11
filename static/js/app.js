@@ -395,93 +395,91 @@ REGLAS DE CONTENIDO:
                     tracks = data.caption_tracks;
                 }
             } catch (e) {
-                console.error('Error fetching tracks for video:', video.url, e);
-                throw new YouTubeCaptionError(
-                    'NETWORK_CORS_ERROR',
-                    'Fallo de conexión al consultar pistas de subtítulos en el servidor.',
-                    { video, originalError: e }
-                );
+                console.warn('Error fetching tracks for video:', video.url, e);
             }
         }
 
-        if (!tracks || tracks.length === 0) {
-            throw new YouTubeCaptionError(
-                'NO_CAPTIONS',
-                'Este video no tiene subtítulos disponibles en YouTube.',
-                { video }
-            );
+        // 1. IF SUBTITLES EXIST: Download & parse XML timedtext directly (instant)
+        if (tracks && tracks.length > 0) {
+            const selectedTrack = tracks.find(t => 
+                t.language_code === 'es' || 
+                t.language_code.startsWith('es-') ||
+                (t.name && t.name.toLowerCase().includes('spanish')) ||
+                (t.name && t.name.toLowerCase().includes('español'))
+            ) || tracks[0];
+
+            if (selectedTrack && selectedTrack.base_url) {
+                try {
+                    const res = await fetch(selectedTrack.base_url);
+                    if (res.ok) {
+                        const xmlText = await res.text();
+                        if (xmlText && xmlText.trim()) {
+                            const parsed = parseYouTubeTranscriptXml(xmlText);
+                            if (parsed.fullText && parsed.snippetCount > 0) {
+                                return {
+                                    title: video.title || 'Video de YouTube',
+                                    videoId: video.id,
+                                    thumbnail: video.thumbnail,
+                                    fullText: parsed.fullText,
+                                    timedText: parsed.timedText,
+                                    durationSeconds: parsed.durationSeconds,
+                                    sourceType: 'subtitles'
+                                };
+                            }
+                        }
+                    }
+                } catch (fetchErr) {
+                    console.warn('Fallo al descargar subtítulos directos, procediendo con transcripción de audio por IA...', fetchErr);
+                }
+            }
         }
 
-        // Prioritize Spanish language tracks, otherwise fall back to first track
-        const selectedTrack = tracks.find(t => 
-            t.language_code === 'es' || 
-            t.language_code.startsWith('es-') ||
-            (t.name && t.name.toLowerCase().includes('spanish')) ||
-            (t.name && t.name.toLowerCase().includes('español'))
-        ) || tracks[0];
-
-        if (!selectedTrack || !selectedTrack.base_url) {
-            throw new YouTubeCaptionError(
-                'NO_CAPTIONS',
-                'Este video no tiene una pista de subtítulos con URL válida.',
-                { video }
-            );
-        }
-
-        // Fetch the transcript directly from the client browser!
-        let res;
+        // 2. AUTOMATIC AUDIO FALLBACK: Video has no captions -> Download audio stream and transcribe with Puter.ai Speech-to-Text!
         try {
-            res = await fetch(selectedTrack.base_url);
-        } catch (fetchErr) {
-            console.error('Error de red o CORS al consultar timedtext:', fetchErr);
-            throw new YouTubeCaptionError(
-                'NETWORK_CORS_ERROR',
-                'No se pudo conectar con YouTube para descargar los subtítulos (posible bloqueo de red o CORS).',
-                { video, originalError: fetchErr }
-            );
-        }
-
-        if (!res.ok) {
-            if (res.status === 404 || res.status === 410) {
-                throw new YouTubeCaptionError(
-                    'NO_CAPTIONS',
-                    'La pista de subtítulos ya no está disponible en los servidores de YouTube.',
-                    { video, status: res.status }
-                );
+            elements.loadingStatusDesc.textContent = `Video sin subtítulos detectado. Descargando audio de "${video.title || 'video'}"...`;
+            console.log(`Descargando audio de YouTube para "${video.title || video.id}" para transcribir con IA...`);
+            
+            const audioRes = await fetch(`/api/youtube-audio?videoId=${video.id || encodeURIComponent(video.url)}`);
+            if (!audioRes.ok) {
+                throw new Error(`Error ${audioRes.status} al descargar pista de audio`);
             }
+            const audioBlob = await audioRes.blob();
+            if (!audioBlob || audioBlob.size < 500) {
+                throw new Error('El stream de audio devuelto está vacío.');
+            }
+
+            elements.loadingStatusDesc.textContent = `Transcribiendo audio de "${video.title || 'video'}" con IA (Speech-to-Text de Puter)...`;
+            console.log(`Transcribiendo audio (${(audioBlob.size / (1024*1024)).toFixed(2)} MB) con puter.ai.speech2txt...`);
+
+            const audioFile = new File([audioBlob], `youtube_${video.id || 'audio'}.m4a`, { type: audioBlob.type || 'audio/mp4' });
+            const transcriptionRes = await puter.ai.speech2txt(audioFile);
+            const audioText = typeof transcriptionRes === 'string' 
+                ? transcriptionRes 
+                : (transcriptionRes?.text || transcriptionRes?.transcript || '');
+
+            if (!audioText || audioText.trim().length < 10) {
+                throw new Error('La IA no pudo detectar palabras habladas en el audio de este video.');
+            }
+
+            showToast(`¡Audio de "${video.title || 'video'}" transcrito exitosamente con IA!`, 'success');
+
+            return {
+                title: video.title || 'Video de YouTube',
+                videoId: video.id,
+                thumbnail: video.thumbnail,
+                fullText: audioText.trim(),
+                timedText: audioText.trim(),
+                durationSeconds: 0,
+                sourceType: 'audio_speech2txt'
+            };
+        } catch (audioErr) {
+            console.error('Error al transcribir audio del video:', audioErr);
             throw new YouTubeCaptionError(
-                'NETWORK_CORS_ERROR',
-                `Error HTTP ${res.status} al descargar subtítulos de YouTube.`,
-                { video, status: res.status }
+                'NO_CAPTIONS',
+                `No se pudo transcribir el audio de "${video.title || 'este video'}": ${audioErr.message || 'Error en el servicio de transcripción'}.`,
+                { video, originalError: audioErr }
             );
         }
-
-        const xmlText = await res.text();
-        if (!xmlText || !xmlText.trim()) {
-            throw new YouTubeCaptionError(
-                'EMPTY_TRANSCRIPT',
-                'El archivo de subtítulos devuelto por YouTube está vacío.',
-                { video }
-            );
-        }
-
-        const parsed = parseYouTubeTranscriptXml(xmlText);
-        if (!parsed.fullText || parsed.snippetCount === 0) {
-            throw new YouTubeCaptionError(
-                'EMPTY_TRANSCRIPT',
-                'No se pudieron extraer líneas de texto legibles de los subtítulos.',
-                { video }
-            );
-        }
-
-        return {
-            title: video.title || 'Video de YouTube',
-            videoId: video.id,
-            thumbnail: video.thumbnail,
-            fullText: parsed.fullText,
-            timedText: parsed.timedText,
-            durationSeconds: parsed.durationSeconds
-        };
     }
 
 
@@ -627,11 +625,12 @@ REGLAS DE CONTENIDO:
                         thumbnail: data.thumbnail,
                         fallback_thumbnail: data.fallback_thumbnail,
                         has_captions: data.has_captions,
+                        has_audio: data.has_audio,
                         caption_tracks: data.caption_tracks || []
                     });
                     addedCount++;
                     if (data.has_captions === false) {
-                        showToast(`El video "${data.title || rawUrl}" no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.`, 'warning');
+                        showToast(`"${data.title || rawUrl}" agregado. Sin subtítulos: su audio se transcribirá con IA automáticamente.`, 'info');
                     }
                 } else {
                     showToast(`No se pudo verificar el video "${rawUrl}": ${data.error || 'Enlace inválido'}`, 'warning');
@@ -684,21 +683,8 @@ REGLAS DE CONTENIDO:
                         <span>${escapeHtml(vid.author)}</span>
                         ${vid.has_captions !== false 
                             ? '<span class="badge-success"><i class="fa-solid fa-closed-captioning"></i> Subtítulos listos</span>' 
-                            : '<span class="badge-warning" style="background:rgba(245,158,11,0.2);color:#fde68a;padding:2px 8px;border-radius:6px;font-size:0.75rem;"><i class="fa-solid fa-triangle-exclamation"></i> Sin subtítulos</span>'}
+                            : '<span class="badge-ai" style="background:rgba(99,102,241,0.25);color:#a5b4fc;padding:2px 8px;border-radius:6px;font-size:0.75rem;border:1px solid rgba(99,102,241,0.3);"><i class="fa-solid fa-wand-magic-sparkles"></i> Transcripción por audio IA</span>'}
                     </div>
-                    ${vid.has_captions === false ? `
-                        <div class="yt-video-rescue-actions">
-                            <button type="button" class="yt-video-rescue-btn rescue-audio-btn" data-idx="${idx}">
-                                <i class="fa-solid fa-microphone"></i> Subir audio
-                            </button>
-                            <button type="button" class="yt-video-rescue-btn rescue-pdf-btn" data-idx="${idx}">
-                                <i class="fa-solid fa-file-pdf"></i> Subir PDF
-                            </button>
-                            <button type="button" class="yt-video-rescue-btn rescue-notes-btn" data-idx="${idx}">
-                                <i class="fa-solid fa-align-left"></i> Pegar notas
-                            </button>
-                        </div>
-                    ` : ''}
                 </div>
                 <button type="button" class="remove-item-btn remove-yt-btn" data-idx="${idx}" title="Eliminar este video">
                     <i class="fa-solid fa-xmark"></i>
@@ -713,29 +699,6 @@ REGLAS DE CONTENIDO:
                 const idx = parseInt(btn.getAttribute('data-idx'));
                 state.selectedVideos.splice(idx, 1);
                 updateYtList();
-            });
-        });
-
-        // Wire rescue actions
-        document.querySelectorAll('.rescue-audio-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (elements.audioFileInput) elements.audioFileInput.click();
-            });
-        });
-        document.querySelectorAll('.rescue-pdf-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (elements.pdfFileInput) elements.pdfFileInput.click();
-            });
-        });
-        document.querySelectorAll('.rescue-notes-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (elements.manualTextInput) {
-                    elements.manualTextInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    elements.manualTextInput.focus();
-                }
             });
         });
     }
@@ -1053,16 +1016,16 @@ REGLAS DE CONTENIDO:
                 }
             }
 
-            // Fetch YouTube transcripts with graceful fallback
+            // Fetch YouTube transcripts or audio speech2txt
             const videoResults = [];
             const skippedVideos = [];
             for (const vid of state.selectedVideos) {
-                elements.loadingStatusDesc.textContent = `Descargando subtítulos de "${vid.title || 'video'}"...`;
+                elements.loadingStatusDesc.textContent = `Procesando "${vid.title || 'video'}"...`;
                 try {
                     const res = await fetchYouTubeTranscript(vid);
                     videoResults.push(res);
                 } catch (vidErr) {
-                    console.warn(`No se pudo extraer subtítulos de "${vid.title || vid.url}":`, vidErr);
+                    console.warn(`No se pudo procesar "${vid.title || vid.url}":`, vidErr);
                     skippedVideos.push({ video: vid, error: vidErr });
                 }
             }
@@ -1074,17 +1037,17 @@ REGLAS DE CONTENIDO:
                 if (skippedVideos.length > 0) {
                     const firstErr = skippedVideos[0].error;
                     if (firstErr instanceof YouTubeCaptionError && firstErr.code === 'NETWORK_CORS_ERROR') {
-                        throw new Error('Hubo un problema de red o CORS al consultar los subtítulos en tu navegador. Puedes subir el audio o PDF del tema.');
+                        throw new Error('Hubo un problema de conexión al consultar el video. Verifica tu red e intenta nuevamente.');
                     }
-                    throw new Error('Este video no tiene subtítulos disponibles. Probá con otro video o subí el contenido como PDF.');
+                    throw new Error(firstErr.message || 'No se pudo transcribir el audio ni los subtítulos de este video.');
                 }
                 throw new Error('No se pudo extraer texto ni de los documentos, ni de los audios, ni de los videos seleccionados.');
             }
 
-            // If some videos lacked captions but we have other valid sources:
+            // If some videos failed but we have other valid sources:
             if (skippedVideos.length > 0 && totalUsableSources > 0) {
                 const names = skippedVideos.map(s => `"${s.video.title || 'Video'}"`).join(', ');
-                showToast(`Se omitió ${names} (sin subtítulos) y se continuó generando el apunte con el resto de las fuentes disponibles.`, 'info');
+                showToast(`Se omitió ${names} (no se pudo procesar) y se continuó con el resto de fuentes disponibles.`, 'info');
             }
 
             // Progress stage 2: AI Call with Puter.js
