@@ -552,6 +552,45 @@ def check_status():
         "message": "Servicio de Inteligencia Artificial activo sin requerir configuración."
     })
 
+@app.route('/api/health-gemini', methods=['GET'])
+def health_gemini():
+    """Diagnostic endpoint to verify server-side GEMINI_API_KEY connectivity in under 2 seconds."""
+    server_key = os.environ.get('GEMINI_API_KEY', '').strip(" \t\n\r'\"")
+    if not server_key:
+        return jsonify({
+            "success": False,
+            "has_server_key": False,
+            "error": "No hay variable GEMINI_API_KEY configurada en el servidor."
+        }), 400
+
+    masked_key = f"{server_key[:8]}...{server_key[-4:]}" if len(server_key) > 12 else "***"
+    import time
+    start_t = time.time()
+    try:
+        from google import genai
+        client = genai.Client(api_key=server_key)
+        resp = client.models.generate_content(
+            model=GeminiConfig.DEFAULT_MODEL,
+            contents="Responde solo la palabra: OK"
+        )
+        elapsed = round((time.time() - start_t) * 1000)
+        return jsonify({
+            "success": True,
+            "has_server_key": True,
+            "masked_key": masked_key,
+            "model": GeminiConfig.DEFAULT_MODEL,
+            "gemini_reply": resp.text.strip() if resp and resp.text else "",
+            "latency_ms": elapsed,
+            "status": "healthy"
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "has_server_key": True,
+            "masked_key": masked_key,
+            "error": str(e)
+        }), 400
+
 @app.route('/api/save-key', methods=['POST'])
 def save_key():
     data = request.get_json() or {}
