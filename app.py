@@ -83,34 +83,30 @@ def get_youtube_transcript(video_id):
         from youtube_transcript_api import YouTubeTranscriptApi
         raw_data = None
 
-        # 1. Modern v1.x API (instance based)
-        try:
+        # 1. Modern v1.x API
+        if hasattr(YouTubeTranscriptApi, 'fetch') or hasattr(YouTubeTranscriptApi, 'list'):
             api = YouTubeTranscriptApi()
-            # Try fetching in preferred languages (Spanish first)
             try:
-                fetched = api.fetch(video_id, languages=['es', 'es-419', 'es-ES', 'es-AR'])
+                fetched = api.fetch(video_id, languages=['es', 'es-419', 'es-ES', 'es-AR', 'en'])
                 raw_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
             except Exception:
-                # If specific Spanish is not found, get list and fetch original transcript directly
                 tl = api.list(video_id)
                 for t in tl:
                     fetched = t.fetch()
                     raw_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
                     if raw_data:
                         break
-        except Exception as e1:
-            # 2. Legacy v0.x API fallback (class based)
+        # 2. Legacy v0.x API
+        elif hasattr(YouTubeTranscriptApi, 'get_transcript'):
             try:
-                if hasattr(YouTubeTranscriptApi, 'get_transcript'):
-                    raw_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['es', 'es-419', 'es-ES', 'en'])
-                elif hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+                raw_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['es', 'es-419', 'es-ES', 'en'])
+            except Exception:
+                if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
                     tl = YouTubeTranscriptApi.list_transcripts(video_id)
                     for item in tl:
                         raw_data = item.fetch()
                         if raw_data:
                             break
-            except Exception:
-                raise e1
 
         if not raw_data:
             return {
