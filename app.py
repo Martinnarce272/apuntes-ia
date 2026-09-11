@@ -78,69 +78,44 @@ def get_youtube_metadata(video_id):
     }
 
 def get_youtube_transcript(video_id):
-    """Extract transcript with timestamps from YouTube supporting modern and legacy APIs."""
+    """Extract transcript with timestamps from YouTube supporting v1.x and v0.x APIs."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         raw_data = None
 
-        # 1. Try modern v1.x API (instance based)
+        # 1. Modern v1.x API (instance based)
         try:
             api = YouTubeTranscriptApi()
-            transcript_list = api.list(video_id)
-            target_transcript = None
-            
-            # Look for Spanish or preferred languages
+            # Try fetching in preferred languages (Spanish first)
             try:
-                target_transcript = transcript_list.find_transcript(['es', 'es-419', 'es-ES', 'es-AR'])
+                fetched = api.fetch(video_id, languages=['es', 'es-419', 'es-ES', 'es-AR'])
+                raw_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
             except Exception:
-                pass
-                
-            # If not found directly, look for any transcript and translate to Spanish if translatable
-            if not target_transcript:
-                for t in transcript_list:
-                    target_transcript = t
-                    if hasattr(t, 'is_translatable') and t.is_translatable and t.language_code not in ['es', 'es-419', 'es-ES']:
-                        try:
-                            target_transcript = t.translate('es')
-                        except Exception:
-                            pass
-                    break
-                    
-            if target_transcript:
-                fetched = target_transcript.fetch()
-                if hasattr(fetched, 'to_raw_data'):
-                    raw_data = fetched.to_raw_data()
-                else:
-                    raw_data = fetched
-            else:
-                fetched = api.fetch(video_id, languages=['es', 'es-419', 'es-ES', 'en'])
-                if hasattr(fetched, 'to_raw_data'):
-                    raw_data = fetched.to_raw_data()
-                else:
-                    raw_data = fetched
+                # If specific Spanish is not found, get list and fetch original transcript directly
+                tl = api.list(video_id)
+                for t in tl:
+                    fetched = t.fetch()
+                    raw_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
+                    if raw_data:
+                        break
         except Exception as e1:
-            # 2. Try legacy v0.x API (class-based)
+            # 2. Legacy v0.x API fallback (class based)
             try:
-                if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-                    tl = YouTubeTranscriptApi.list_transcripts(video_id)
-                    t = None
-                    try:
-                        t = tl.find_transcript(['es', 'es-419', 'es-ES', 'en'])
-                    except Exception:
-                        for item in tl:
-                            t = item
-                            break
-                    if t:
-                        raw_data = t.fetch()
-                if not raw_data and hasattr(YouTubeTranscriptApi, 'get_transcript'):
+                if hasattr(YouTubeTranscriptApi, 'get_transcript'):
                     raw_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['es', 'es-419', 'es-ES', 'en'])
+                elif hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+                    tl = YouTubeTranscriptApi.list_transcripts(video_id)
+                    for item in tl:
+                        raw_data = item.fetch()
+                        if raw_data:
+                            break
             except Exception:
                 raise e1
 
         if not raw_data:
             return {
                 "success": False,
-                "error": "No se encontraron subtítulos ni transcripción disponible para este video en YouTube. Asegúrate de que el video tenga subtítulos activados (CC)."
+                "error": "No se encontraron subtítulos disponibles para este video en YouTube. Asegúrate de que el video tenga subtítulos activados (CC)."
             }
 
         full_text_pieces = []
@@ -175,12 +150,17 @@ def get_youtube_transcript(video_id):
         if "TranscriptsDisabled" in error_msg or "Subtitles are disabled" in error_msg:
             return {
                 "success": False,
-                "error": "El autor de este video tiene desactivados los subtítulos en YouTube. Si tienes apuntes o diapositivas en PDF, puedes subirlos directamente y la IA generará el apunte completo."
+                "error": "El autor de este video tiene desactivados los subtítulos en YouTube. Si tienes diapositivas o apuntes en PDF, súbelos directamente y la IA generará el apunte completo."
             }
         if "NoTranscriptFound" in error_msg:
             return {
                 "success": False,
                 "error": "No se encontró una transcripción disponible para este video. Prueba con un video que tenga subtítulos (CC) activados."
+            }
+        if "IpBlocked" in error_msg or "blocking requests from your IP" in error_msg:
+            return {
+                "success": False,
+                "error": "YouTube está limitando temporalmente las consultas desde la nube para este video en particular. Puedes subir un documento PDF y la IA generará el apunte completo sin problemas."
             }
         return {
             "success": False,
