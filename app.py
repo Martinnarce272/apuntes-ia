@@ -73,22 +73,68 @@ def robust_parse_json(text):
     fixed2 = re.sub(r'\\(?![/"\\])', r'\\\\', text)
     return json.loads(fixed2, strict=False)
 
-def get_api_key(request_data=None):
-    """Retrieve Gemini API key from request, headers, or environment."""
-    if request_data and request_data.get('apiKey'):
-        k = request_data.get('apiKey').strip()
-        if k:
-            return k
+class GeminiConfig:
+    """Centralized configuration for Gemini AI integration."""
+    DEFAULT_MODEL = "gemini-2.5-flash"
+    FALLBACK_MODELS = [
+        "gemini-2.5-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-flash-latest"
+    ]
+    TEMPERATURE = 0.3
+    RESPONSE_MIME_TYPE = "application/json"
+    KEY_HELP_URL = "https://aistudio.google.com/app/apikey"
+
+def extract_and_validate_key(request_data=None):
+    """
+    Retrieve, clean, and validate Gemini API key from:
+    1. Header 'X-Gemini-Api-Key'
+    2. Form data 'apiKey'
+    3. Server environment 'GEMINI_API_KEY'
+    Returns: (clean_key, error_message)
+    """
+    raw_key = None
     
+    # 1. Check custom HTTP header first (best practice for client-side keys)
     header_key = request.headers.get('X-Gemini-Api-Key')
     if header_key:
-        return header_key.strip()
+        raw_key = header_key
+    elif request_data and request_data.get('apiKey'):
+        raw_key = request_data.get('apiKey')
+    elif os.environ.get('GEMINI_API_KEY'):
+        raw_key = os.environ.get('GEMINI_API_KEY')
         
-    env_key = os.environ.get('GEMINI_API_KEY')
-    if env_key:
-        return env_key.strip()
+    if not raw_key:
+        return None, (
+            "Se requiere una clave de Google Gemini para procesar el apunte. "
+            "Toca el botón 'Clave Gemini' en la barra superior para ingresarla. "
+            f"Es 100% gratuita y la obtienes en {GeminiConfig.KEY_HELP_URL}."
+        )
         
-    return None
+    # Sanitize key: strip whitespaces, newlines, single and double quotes
+    clean_key = raw_key.strip(" \t\n\r'\"")
+    
+    # Catch blocked GCP token format (AQ...)
+    if clean_key.startswith("AQ."):
+        return None, (
+            "La clave ingresada (que empieza con 'AQ.') es un token de Google Cloud que tiene bloqueada la API "
+            f"de Gemini (API_KEY_SERVICE_BLOCKED). Tu clave oficial 100% gratuita de Gemini la creas en {GeminiConfig.KEY_HELP_URL} "
+            "(las claves oficiales de Gemini siempre empiezan con 'AIzaSy...')."
+        )
+        
+    if len(clean_key) < 20:
+        return None, (
+            "La clave ingresada parece incompleta o demasiado corta. "
+            f"Asegúrate de copiarla completa desde {GeminiConfig.KEY_HELP_URL}."
+        )
+        
+    return clean_key, None
+
+def get_api_key(request_data=None):
+    """Backwards-compatible helper returning clean key or None."""
+    key, _ = extract_and_validate_key(request_data)
+    return key
 
 def extract_youtube_id(url_or_id):
     """Extract YouTube video ID from various URL patterns or direct ID."""
@@ -536,19 +582,12 @@ def youtube_preview():
 
 @app.route('/api/generate-notes', methods=['POST'])
 def generate_notes():
-    api_key = get_api_key(request.form)
-    if not api_key:
+    api_key, key_err = extract_and_validate_key(request.form)
+    if key_err:
         return jsonify({
             "success": False, 
             "is_auth_error": True,
-            "error": "Se requiere una clave de Google Gemini para procesar el apunte. Toca el botón 'Clave Gemini' en la barra superior para ingresarla (es 100% gratuita en aistudio.google.com/app/apikey y empieza con 'AIzaSy')."
-        }), 400
-
-    if api_key.startswith("AQ."):
-        return jsonify({
-            "success": False,
-            "is_auth_error": True,
-            "error": "La clave ingresada (que empieza con 'AQ.') no es una clave válida de Gemini y fue bloqueada por Google (API_KEY_SERVICE_BLOCKED). Tu clave oficial gratuita de Gemini la obtienes en https://aistudio.google.com/app/apikey (siempre empieza con 'AIzaSy')."
+            "error": key_err
         }), 400
 
     youtube_url = request.form.get('youtubeUrl', '').strip()
@@ -677,13 +716,13 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
         
         config = types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.3,
-            response_mime_type="application/json"
+            temperature=GeminiConfig.TEMPERATURE,
+            response_mime_type=GeminiConfig.RESPONSE_MIME_TYPE
         )
 
         import time
-        # Robust model fallback list
-        models_to_try = ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+        # Robust model fallback list from central config
+        models_to_try = GeminiConfig.FALLBACK_MODELS
         response = None
         last_error = None
         

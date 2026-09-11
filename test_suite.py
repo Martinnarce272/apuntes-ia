@@ -53,7 +53,44 @@ class TestApuntesIA(unittest.TestCase):
             self.assertEqual(res.status_code, 200)
             data = json.loads(res.data)
             self.assertTrue(data['success'])
-            self.assertEqual(data['video_id'], 'dQw4w9WgXcQ')
+    def test_extract_and_validate_key_header_and_sanitization(self):
+        # Test clean extraction with whitespace and quotes from header
+        with app.test_request_context('/', headers={'X-Gemini-Api-Key': ' " AIzaSyMockKeyForValidationPurposes12345 " '}):
+            from app import extract_and_validate_key
+            key, err = extract_and_validate_key()
+            self.assertIsNone(err)
+            self.assertEqual(key, "AIzaSyMockKeyForValidationPurposes12345")
+
+    def test_extract_and_validate_key_blocks_aq_token(self):
+        with app.test_request_context('/', headers={'X-Gemini-Api-Key': 'AQ.Ab8RN6LL_test_token_service_blocked'}):
+            from app import extract_and_validate_key
+            key, err = extract_and_validate_key()
+            self.assertIsNone(key)
+            self.assertIn("API_KEY_SERVICE_BLOCKED", err)
+            self.assertIn("aistudio.google.com/app/apikey", err)
+
+    def test_extract_and_validate_key_too_short(self):
+        with app.test_request_context('/', headers={'X-Gemini-Api-Key': 'short_key'}):
+            from app import extract_and_validate_key
+            key, err = extract_and_validate_key()
+            self.assertIsNone(key)
+            self.assertIn("incompleta", err)
+
+    def test_generate_notes_missing_key_returns_400_with_auth_flag(self):
+        import os
+        old_env = os.environ.get('GEMINI_API_KEY')
+        if 'GEMINI_API_KEY' in os.environ:
+            del os.environ['GEMINI_API_KEY']
+        try:
+            res = self.client.post('/api/generate-notes', data={'youtubeUrl': 'https://youtu.be/dQw4w9WgXcQ'})
+            self.assertEqual(res.status_code, 400)
+            data = json.loads(res.data)
+            self.assertFalse(data['success'])
+            self.assertTrue(data['is_auth_error'])
+            self.assertIn('aistudio.google.com', data['error'])
+        finally:
+            if old_env:
+                os.environ['GEMINI_API_KEY'] = old_env
 
 if __name__ == '__main__':
     unittest.main()

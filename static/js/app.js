@@ -511,9 +511,15 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('pdfFiles', file);
         });
 
+        const reqHeaders = {};
+        if (savedKey) {
+            reqHeaders['X-Gemini-Api-Key'] = savedKey;
+        }
+
         try {
             const response = await fetch('/api/generate-notes', {
                 method: 'POST',
+                headers: reqHeaders,
                 body: formData
             });
 
