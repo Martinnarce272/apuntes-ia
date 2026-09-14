@@ -2,6 +2,7 @@ import sys
 import os
 import re
 import json
+import time
 import logging
 import tempfile
 import base64
@@ -379,10 +380,15 @@ def get_youtube_video_data(video_id):
     3. youtube-transcript-api
     4. oEmbed metadata
     """
+    innertube_err = None
+    ytdlp_err = None
+    transcript_err = None
+
     # 1. Primary: Innertube Android API
     vdata, err = get_innertube_android_data(video_id)
     if vdata and (vdata.get("has_captions") or vdata.get("has_audio")):
         return vdata, {"status": "ok_via_innertube_android"}
+    innertube_err = err
 
     # 2. Secondary fallback: yt-dlp with android player client only
     cookie_file = get_youtube_cookiefile()
@@ -460,6 +466,7 @@ def get_youtube_video_data(video_id):
                 "audio_ext": selected_audio.get('ext', 'm4a') if selected_audio else 'm4a'
             }, {"status": "ok_via_yt_dlp"}
     except Exception as e:
+        ytdlp_err = str(e)
         logger.warning(f"yt-dlp extract failed for {video_id}: {e}")
 
     # 3. Tertiary fallback: youtube-transcript-api
@@ -485,6 +492,7 @@ def get_youtube_video_data(video_id):
             "audio_format_id": None,
             "audio_ext": "m4a"
         }, {"status": "ok_via_transcript_api"}
+    transcript_err = "No transcript found via Innertube or youtube-transcript-api"
 
     # 4. Final fallback: oEmbed
     meta = get_youtube_metadata(video_id)
@@ -500,7 +508,12 @@ def get_youtube_video_data(video_id):
         "audio_headers": {},
         "audio_format_id": None,
         "audio_ext": "m4a"
-    }, {"status": "metadata_only"}
+    }, {
+        "status": "metadata_only",
+        "innertube_err": innertube_err,
+        "ytdlp_err": ytdlp_err,
+        "transcript_err": transcript_err
+    }
 
 def get_youtube_caption_tracks(video_id):
     """Retrieve available subtitle tracks and signed baseUrls."""
@@ -1031,11 +1044,13 @@ def generate_notes():
     try:
         client = genai.Client(api_key=api_key)
 
-        # 1. Process YouTube videos
+        # 1. Process YouTube videos (deduplicate by video_id)
+        seen_video_ids = set()
         for yt_url in youtube_urls:
             video_id = extract_youtube_id(yt_url)
-            if not video_id:
+            if not video_id or video_id in seen_video_ids:
                 continue
+            seen_video_ids.add(video_id)
 
             v_meta = get_youtube_metadata(video_id)
             v_title = v_meta.get("title", f"Video {video_id}")
@@ -1053,8 +1068,10 @@ def generate_notes():
                     transcript_text = t_data["full_text"]
 
             if transcript_text:
+                clean_transcript = re.sub(r'[ \t]+', ' ', transcript_text)
+                clean_transcript = re.sub(r'\n{3,}', '\n\n', clean_transcript).strip()
                 contents_parts.append(types.Part.from_text(
-                    text=f"=== FUENTE VIDEO YOUTUBE ({video_id}): '{v_title}' ===\nTranscripción completa:\n{transcript_text}"
+                    text=f"=== FUENTE VIDEO YOUTUBE ({video_id}): '{v_title}' ===\nTranscripción completa:\n{clean_transcript}"
                 ))
                 sources_list.append({
                     "type": "youtube",
@@ -1158,40 +1175,108 @@ def generate_notes():
             inst_text += f"Instrucciones específicas del usuario: {user_instructions}\n"
         contents_parts.append(types.Part.from_text(text=inst_text))
 
-        # Generate with Gemini using model fallback hierarchy
+        # Calculate character and estimated/real token counts BEFORE calling Gemini
+        total_chars = sum(len(p.text) for p in contents_parts if hasattr(p, 'text') and p.text)
+        has_multimodal_videos = any(s.get("mode") == "gemini_multimodal_video" for s in sources_list)
+        multimodal_count = sum(1 for s in sources_list if s.get("mode") == "gemini_multimodal_video")
+
+        total_tokens = None
+        try:
+            token_count_resp = client.models.count_tokens(
+                model=GeminiConfig.PRIMARY_MODEL,
+                contents=contents_parts
+            )
+            total_tokens = getattr(token_count_resp, 'total_tokens', None)
+        except Exception as cnt_err:
+            logger.warning(f"[GEMINI COUNT_TOKENS WARNING] No se pudo obtener conteo previo de tokens: {cnt_err}")
+
+        if total_tokens is None:
+            # Heurística: 1 token ~ 4 caracteres de texto; video multimodal ~290 tokens/sec (~600.000 tokens por video largo)
+            estimated_text_tokens = total_chars // 4
+            total_tokens = estimated_text_tokens + (multimodal_count * 600_000)
+
+        log_preflight = (
+            f"[GEMINI PRE-FLIGHT] Modelo objetivo: {GeminiConfig.PRIMARY_MODEL} | "
+            f"Caracteres de texto: {total_chars:,} | "
+            f"Partes en payload: {len(contents_parts)} | "
+            f"Videos multimodales directos: {multimodal_count} | "
+            f"Tokens calculados: {total_tokens:,} / 1,048,576 (Límite máximo)"
+        )
+        logger.info(log_preflight)
+        print(log_preflight, flush=True)
+
+        # Safety limit guard: prevent cryptic 400 from Gemini
+        MAX_ALLOWED_TOKENS = 1_000_000
+        if total_tokens > MAX_ALLOWED_TOKENS:
+            extra_msg = ""
+            if has_multimodal_videos:
+                extra_msg = (
+                    f" Se detectó que {multimodal_count} video(s) de YouTube no cuentan con transcripción de texto "
+                    "disponible en el servidor, por lo que Gemini debe analizar el video audiovisual completo (~290 tokens por segundo de video)."
+                )
+            user_err_msg = (
+                f"El contenido combinado de las fuentes es demasiado extenso "
+                f"({total_tokens:,} tokens calculados, superando el límite de 1,048,576 tokens de Gemini).{extra_msg} "
+                "Por favor probá con menos videos o videos más cortos."
+            )
+            logger.warning(f"[GEMINI TOKEN LIMIT EXCEEDED] {user_err_msg}")
+            print(f"[GEMINI TOKEN LIMIT EXCEEDED] {user_err_msg}", flush=True)
+            return jsonify({
+                "success": False,
+                "error": user_err_msg,
+                "total_tokens": total_tokens,
+                "token_limit": 1048576
+            }), 400
+
+        # Generate with Gemini using model fallback hierarchy and automatic retries for transient errors
         attempted_errors = {}
         result_data = None
         used_model = None
 
         for model_name in GEMINI_MODELS:
-            log_start = f"[GEMINI REQUEST] Consultando modelo: {model_name} (Lista activa: {GEMINI_MODELS})"
-            logger.info(log_start)
-            print(log_start, flush=True)
+            max_retries = 2
+            for attempt in range(1, max_retries + 2):
+                log_start = f"[GEMINI REQUEST] Consultando modelo: {model_name} (Intento {attempt}/{max_retries + 1}) | Tokens: {total_tokens:,}"
+                logger.info(log_start)
+                print(log_start, flush=True)
 
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=contents_parts,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
-                        response_mime_type="application/json",
-                        temperature=0.3,
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents_parts,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT,
+                            response_mime_type="application/json",
+                            temperature=0.3,
+                        )
                     )
-                )
-                if response and response.text:
-                    result_data = robust_parse_json(response.text)
-                    used_model = model_name
-                    log_success = f"[GEMINI SUCCESS] Apunte generado exitosamente con el modelo: {model_name}"
-                    logger.info(log_success)
-                    print(log_success, flush=True)
-                    result_data["_used_model"] = model_name
-                    break
-            except Exception as e:
-                err_str = str(e)
-                log_err = f"[GEMINI ERROR] Falló generación con modelo '{model_name}': {err_str}"
-                logger.warning(log_err)
-                print(log_err, flush=True)
-                attempted_errors[model_name] = err_str
+                    if response and response.text:
+                        result_data = robust_parse_json(response.text)
+                        used_model = model_name
+                        log_success = f"[GEMINI SUCCESS] Apunte generado exitosamente con el modelo: {model_name}"
+                        logger.info(log_success)
+                        print(log_success, flush=True)
+                        result_data["_used_model"] = model_name
+                        break
+                except Exception as e:
+                    err_str = str(e)
+                    is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "temporarily unavailable"])
+                    if is_transient and attempt <= max_retries:
+                        backoff_sec = attempt * 2  # 2s on first retry, 4s on second
+                        log_retry = f"[GEMINI RETRY] Modelo '{model_name}' devolvió error transitorio ({err_str[:120]}...). Reintentando en {backoff_sec}s (intento {attempt}/{max_retries})..."
+                        logger.warning(log_retry)
+                        print(log_retry, flush=True)
+                        time.sleep(backoff_sec)
+                        continue
+                    else:
+                        log_err = f"[GEMINI ERROR] Falló generación con modelo '{model_name}': {err_str}"
+                        logger.warning(log_err)
+                        print(log_err, flush=True)
+                        attempted_errors[model_name] = err_str
+                        break
+
+            if result_data:
+                break
 
         if not result_data:
             err_summary = " | ".join([f"{m}: {err}" for m, err in attempted_errors.items()])

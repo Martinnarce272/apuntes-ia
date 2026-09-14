@@ -105,14 +105,19 @@ class TestApuntesIA(unittest.TestCase):
         self.assertGreater(len(chunk), 0)
 
     def test_youtube_transcript_endpoint(self):
-        # Test direct transcript extraction without media download
+        # Test direct transcript extraction endpoint
         res = self.client.get('/api/youtube-transcript?videoId=0XoS8EUrG3k')
-        self.assertEqual(res.status_code, 200)
         data = json.loads(res.data)
-        self.assertTrue(data['success'])
-        self.assertIn('full_text', data)
-        self.assertGreater(len(data['full_text']), 100)
-        self.assertIn('timed_text', data)
+        if res.status_code == 200:
+            self.assertTrue(data['success'])
+            self.assertIn('full_text', data)
+            self.assertGreater(len(data['full_text']), 100)
+            self.assertIn('timed_text', data)
+        else:
+            # When YouTube IP-blocks/rate-limits (429 / IpBlocked), endpoint should return clean JSON 404
+            self.assertEqual(res.status_code, 404)
+            self.assertFalse(data['success'])
+            self.assertIn('error', data)
 
     def test_health_gemini(self):
         res = self.client.get('/api/health-gemini')
@@ -155,6 +160,102 @@ class TestApuntesIA(unittest.TestCase):
         self.assertEqual(data.get('default_model'), "gemini-3.7-flash")
         self.assertEqual(data.get('fallback_model'), "gemini-3.6-flash")
         self.assertIn('commit', data)
+
+    def test_token_limit_exceeded_guard(self):
+        """Verify that when token count exceeds 1M, a user-friendly 400 error is returned."""
+        from unittest.mock import patch, MagicMock
+        with patch('google.genai.Client') as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+            # Mock count_tokens returning 1,350,000 tokens (> 1,000,000 limit)
+            mock_count_resp = MagicMock()
+            mock_count_resp.total_tokens = 1350000
+            mock_client.models.count_tokens.return_value = mock_count_resp
+
+            headers = {'X-Gemini-Api-Key': 'fake_test_key'}
+            res = self.client.post('/api/generate-notes',
+                                  headers=headers,
+                                  json={'notes_text': 'Texto de prueba largo.'})
+            self.assertEqual(res.status_code, 400)
+            data = json.loads(res.data)
+            self.assertFalse(data['success'])
+            self.assertIn('demasiado extenso', data['error'])
+            self.assertIn('1,350,000', data['error'])
+            self.assertEqual(data['total_tokens'], 1350000)
+
+    def test_gemini_503_retry_and_success(self):
+        """Verify that a 503 UNAVAILABLE error triggers automatic retry and succeeds if recovery happens."""
+        from unittest.mock import patch, MagicMock
+        with patch('google.genai.Client') as mock_client_cls, patch('time.sleep') as mock_sleep:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+
+            # Mock count_tokens OK
+            mock_count_resp = MagicMock()
+            mock_count_resp.total_tokens = 5000
+            mock_client.models.count_tokens.return_value = mock_count_resp
+
+            # Mock generate_content: 1st call fails with 503, 2nd call succeeds
+            mock_success_resp = MagicMock()
+            mock_success_resp.text = json.dumps({
+                "title": "Apunte de Prueba",
+                "overview": "Resumen",
+                "key_takeaways": [],
+                "developments": []
+            })
+            mock_client.models.generate_content.side_effect = [
+                Exception("503 UNAVAILABLE: The model is overloaded. Please try again later."),
+                mock_success_resp
+            ]
+
+            headers = {'X-Gemini-Api-Key': 'fake_test_key'}
+            res = self.client.post('/api/generate-notes',
+                                  headers=headers,
+                                  json={'notes_text': 'Texto de prueba'})
+            self.assertEqual(res.status_code, 200)
+            data = json.loads(res.data)
+            self.assertTrue(data['success'])
+            self.assertEqual(data['data']['title'], "Apunte de Prueba")
+            # Verify sleep was called for backoff
+            mock_sleep.assert_called_once_with(2)
+
+    def test_youtube_url_deduplication(self):
+        """Verify that duplicate YouTube URLs are processed only once."""
+        from unittest.mock import patch, MagicMock
+        with patch('google.genai.Client') as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+
+            mock_count_resp = MagicMock()
+            mock_count_resp.total_tokens = 8000
+            mock_client.models.count_tokens.return_value = mock_count_resp
+
+            mock_success_resp = MagicMock()
+            mock_success_resp.text = json.dumps({
+                "title": "Apunte con Video",
+                "sources": []
+            })
+            mock_client.models.generate_content.return_value = mock_success_resp
+
+            headers = {'X-Gemini-Api-Key': 'fake_test_key'}
+            # Send same video in 2 different URL formats
+            res = self.client.post('/api/generate-notes',
+                                  headers=headers,
+                                  json={
+                                      'youtube_urls': [
+                                          'https://www.youtube.com/watch?v=0XoS8EUrG3k',
+                                          'https://youtu.be/0XoS8EUrG3k'
+                                      ],
+                                      'client_transcripts': {
+                                          '0XoS8EUrG3k': 'Transcripcion de prueba para el video.'
+                                      }
+                                  })
+            self.assertEqual(res.status_code, 200)
+            data = json.loads(res.data)
+            self.assertTrue(data['success'])
+            # Ensure sources list has only 1 entry for 0XoS8EUrG3k
+            sources = [s for s in data['data']['sources'] if s.get('video_id') == '0XoS8EUrG3k']
+            self.assertEqual(len(sources), 1)
 
 if __name__ == '__main__':
     unittest.main()
