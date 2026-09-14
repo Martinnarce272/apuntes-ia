@@ -4,7 +4,7 @@ import re
 import json
 import requests
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 
@@ -85,6 +85,14 @@ class GeminiConfig:
     ACTIVE_MODELS = [PRIMARY_MODEL, FALLBACK_MODEL]
     MODELS = ACTIVE_MODELS + LAST_RESORT_MODELS
 
+    @classmethod
+    def get_primary_chain(cls):
+        return list(cls.ACTIVE_MODELS)
+
+    @classmethod
+    def get_last_resort_chain(cls):
+        return list(cls.LAST_RESORT_MODELS)
+
 class GeminiQuotaExceeded(Exception):
     """Excepción específica cuando se agota la cuota gratuita (429 / RESOURCE_EXHAUSTED)."""
     pass
@@ -100,6 +108,72 @@ def is_quota_error(exc):
         return True
     keywords = ["429", "resource_exhausted", "quota", "ratelimit", "rate limit", "exceeded your current quota"]
     return any(k in msg for k in keywords)
+
+
+def is_model_not_found_error(exc):
+    """Detecta si un error corresponde a modelo no encontrado o deprecado (HTTP 404 o NOT_FOUND)."""
+    if not exc:
+        return False
+    msg = str(exc).lower()
+    code = getattr(exc, 'code', None)
+    status_code = getattr(exc, 'status_code', None)
+    if code == 404 or status_code == 404:
+        return True
+    keywords = ["404", "not_found", "not found", "is not supported for this api version", "deprecated", "does not exist"]
+    return any(k in msg for k in keywords)
+
+
+def is_token_limit_error(exc):
+    """Detecta si un error corresponde a límite de tokens o contexto excedido (HTTP 400/413)."""
+    if not exc:
+        return False
+    msg = str(exc).lower()
+    code = getattr(exc, 'code', None)
+    status_code = getattr(exc, 'status_code', None)
+    token_keywords = [
+        "token", "context length", "maximum context", "payload too large",
+        "too many tokens", "exceeds the limit", "request payload",
+        "input length", "max tokens", "too large"
+    ]
+    has_token_indication = any(k in msg for k in token_keywords)
+    is_bad_req = code in (400, 413) or status_code in (400, 413) or "400" in msg or "413" in msg or "invalid_argument" in msg
+    return has_token_indication and (is_bad_req or "exceed" in msg or "limit" in msg)
+
+
+def handle_gemini_error(exc):
+    """Centraliza la clasificación y respuesta HTTP para errores de Google Gemini:
+    - 429: Cuota gratuita agotada (RESOURCE_EXHAUSTED / RATE_LIMIT).
+    - 404: Modelo no encontrado o deprecado por Google.
+    - 400: Límite de tokens o longitud de contexto excedido.
+    - 500: Error interno o inesperado de la API.
+    """
+    if isinstance(exc, GeminiQuotaExceeded) or is_quota_error(exc):
+        return jsonify({
+            "success": False,
+            "error": "Se alcanzó el límite de uso gratuito de Gemini por ahora. Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
+        }), 429
+
+    if is_model_not_found_error(exc):
+        return jsonify({
+            "success": False,
+            "error": "El modelo de IA solicitado no está disponible o ha sido discontinuado por Google Gemini. Por favor verifica la configuración de modelos."
+        }), 404
+
+    if is_token_limit_error(exc):
+        return jsonify({
+            "success": False,
+            "error": "El contenido ingresado supera el límite máximo de tokens o contexto permitido por la IA. Intenta con videos más cortos o con menos documentos simultáneos."
+        }), 400
+
+    safe_msg = str(exc)
+    try:
+        print(f"Error calling Gemini API: {safe_msg}")
+    except Exception:
+        pass
+    return jsonify({
+        "success": False,
+        "error": f"Error al generar el apunte con Gemini: {safe_msg}"
+    }), 500
 
 def call_gemini_with_fallback(client, contents, system_instruction=None, response_mime_type=None, models=None):
     """
@@ -151,6 +225,11 @@ def call_gemini_with_fallback(client, contents, system_instruction=None, respons
                 # 429: No reintentar el mismo modelo. Pasar inmediatamente al siguiente modelo de la lista
                 print(f"[Gemini] Cuota agotada (429) en {model_name}. Pasando inmediatamente al siguiente modelo...")
                 continue
+            elif is_model_not_found_error(merr):
+                # 404: Modelo no disponible o deprecado. Pasar inmediatamente al siguiente modelo
+                all_quota_exhausted = False
+                print(f"[Gemini] Modelo {model_name} no disponible (404/deprecado). Pasando al siguiente modelo...")
+                continue
             else:
                 # El fallo NO fue por cuota (ej. sobrecarga temporal 503)
                 all_quota_exhausted = False
@@ -193,7 +272,7 @@ def call_gemini_with_fallback(client, contents, system_instruction=None, respons
         except Exception as merr:
             last_error = merr
             print(f"[Gemini] Último recurso {model_name} falló: {str(merr)[:140]}")
-            if is_quota_error(merr):
+            if is_quota_error(merr) or is_model_not_found_error(merr):
                 continue
 
     if is_quota_error(last_error):
@@ -881,27 +960,8 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
             "data": result_data
         })
 
-    except GeminiQuotaExceeded as qe:
-        return jsonify({
-            "success": False,
-            "error": "Se alcanzó el límite de uso gratuito de Gemini por ahora. Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
-        }), 429
-
     except Exception as e:
-        safe_msg = str(e)
-        if is_quota_error(e):
-            return jsonify({
-                "success": False,
-                "error": "Se alcanzó el límite de uso gratuito de Gemini por ahora. Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
-            }), 429
-        try:
-            print(f"Error calling Gemini API: {safe_msg}")
-        except Exception:
-            pass
-        return jsonify({
-            "success": False,
-            "error": f"Error al generar el apunte con Gemini: {safe_msg}"
-        }), 500
+        return handle_gemini_error(e)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))

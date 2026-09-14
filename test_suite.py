@@ -365,6 +365,93 @@ class TestApuntesIA(unittest.TestCase):
         self.assertEqual(data['model_used'], "gemini-3.7-flash")
 
 
+    @patch('app.get_youtube_transcript')
+    @patch('google.genai.Client')
+    def test_model_not_found_404_returns_clear_message(self, mock_client_class, mock_transcript):
+        """When all models return 404 (model not found / deprecated), a clear 404 response is returned."""
+        mock_transcript.return_value = {
+            "success": True,
+            "timed_text": "[00:01] Intro",
+            "full_text": "Intro",
+            "duration_seconds": 10
+        }
+        mock_instance = mock_client_class.return_value
+        mock_instance.models.generate_content.side_effect = Exception("404 NOT_FOUND. models/gemini-old is not found for API version v1")
+
+        res = self.client.post('/api/generate-notes', data={
+            'youtubeUrl': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        }, headers={'X-Gemini-Api-Key': 'fake-test-key-12345'})
+
+        self.assertEqual(res.status_code, 404)
+        data = json.loads(res.data)
+        self.assertFalse(data['success'])
+        self.assertIn("no está disponible o ha sido discontinuado", data['error'])
+
+    @patch('app.get_youtube_transcript')
+    @patch('google.genai.Client')
+    def test_token_limit_400_returns_clear_message(self, mock_client_class, mock_transcript):
+        """When Gemini returns a 400 token/context limit error, a clear 400 response is returned."""
+        mock_transcript.return_value = {
+            "success": True,
+            "timed_text": "[00:01] Intro",
+            "full_text": "Intro",
+            "duration_seconds": 10
+        }
+        mock_instance = mock_client_class.return_value
+        mock_instance.models.generate_content.side_effect = Exception("400 INVALID_ARGUMENT. Request payload exceeds the maximum context length of tokens")
+
+        res = self.client.post('/api/generate-notes', data={
+            'youtubeUrl': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        }, headers={'X-Gemini-Api-Key': 'fake-test-key-12345'})
+
+        self.assertEqual(res.status_code, 400)
+        data = json.loads(res.data)
+        self.assertFalse(data['success'])
+        self.assertIn("límite máximo de tokens", data['error'])
+
+    @patch('app.get_youtube_transcript')
+    @patch('google.genai.Client')
+    def test_model_fallback_on_404_skips_to_next_model(self, mock_client_class, mock_transcript):
+        """When primary model returns 404 (deprecated), it automatically skips to the next available model."""
+        mock_transcript.return_value = {
+            "success": True,
+            "timed_text": "[00:01] Intro",
+            "full_text": "Intro",
+            "duration_seconds": 10
+        }
+        mock_instance = mock_client_class.return_value
+
+        def fake_generate(model, contents, config):
+            if model == "gemini-3.8-flash":
+                raise Exception("404 NOT_FOUND. models/gemini-3.8-flash is deprecated")
+            if model == "gemini-3.5-flash-lite":
+                return MagicMock(text=json.dumps({
+                    "title": "Apunte de 3.5-flash-lite",
+                    "topic_overview": "Resumen",
+                    "estimated_study_time": "10 min",
+                    "key_takeaways": [],
+                    "developments": [],
+                    "general_diagram": {"title": "", "mermaid_code": ""},
+                    "flashcards": [],
+                    "quiz": [],
+                    "exam_tips": [],
+                    "glossary": []
+                }))
+            raise Exception(f"Unexpected model {model}")
+
+        mock_instance.models.generate_content.side_effect = fake_generate
+
+        res = self.client.post('/api/generate-notes', data={
+            'youtubeUrl': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        }, headers={'X-Gemini-Api-Key': 'fake-test-key-12345'})
+
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['success'])
+        self.assertEqual(data['model_used'], "gemini-3.5-flash-lite")
+
+
 if __name__ == '__main__':
+
     unittest.main()
 
