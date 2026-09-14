@@ -73,14 +73,22 @@ def robust_parse_json(text):
     fixed2 = re.sub(r'\\(?![/"\\])', r'\\\\', text)
     return json.loads(fixed2, strict=False)
 
+@app.after_request
+def add_no_cache_headers(response):
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
 class GeminiConfig:
-    """Configuración centralizada de modelos Gemini y orden de intento según cuota disponible.
-    1. Principal: gemini-3.8-flash (con margen de cuota disponible)
-    2. Fallback: gemini-3.5-flash-lite (500 RPD diarios, máxima disponibilidad)
+    """
+    Configuración centralizada de modelos Gemini:
+    1. Modelo principal: gemini-3.5-flash-lite (ultrarrápido, generación en 2-4 segundos, 500 RPD)
+    2. Fallback de alta capacidad: gemini-3.8-flash
     3. Último recurso: gemini-3.7-flash y gemini-3.6-flash (solo si los anteriores fallan por motivos distintos a cuota)
     """
-    PRIMARY_MODEL = "gemini-3.8-flash"
-    FALLBACK_MODEL = "gemini-3.5-flash-lite"
+    PRIMARY_MODEL = "gemini-3.5-flash-lite"
+    FALLBACK_MODEL = "gemini-3.8-flash"
     LAST_RESORT_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash"]
     ACTIVE_MODELS = [PRIMARY_MODEL, FALLBACK_MODEL]
     MODELS = ACTIVE_MODELS + LAST_RESORT_MODELS
@@ -988,7 +996,8 @@ A continuación tienes el material fuente analizado para sintetizar:
 
 {"\n\n---\n\n".join(source_texts)}
 
-Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
+INSTRUCCIÓN CRÍTICA:
+Genera ÚNICAMENTE el Apunte y Resumen de Estudio. Está TERMINANTEMENTE PROHIBIDO generar quizzes, cuestionarios, flashcards o glosarios. Solo devuelve el JSON con title, topic_overview, estimated_study_time, key_takeaways, general_diagram y developments.
 """
 
         print("[Proceso Síntesis] Generando Apunte Maestro final en formato JSON...")
@@ -1040,11 +1049,11 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
                         if primary_video_id and not f.get("video_id"):
                             f["video_id"] = primary_video_id
 
-        # Asegurar claves vacías para compatibilidad retroactiva
-        result_data.setdefault("flashcards", [])
-        result_data.setdefault("quiz", [])
-        result_data.setdefault("exam_tips", [])
-        result_data.setdefault("glossary", [])
+        # Eliminar cualquier residuo de quiz o flashcards
+        result_data.pop("quiz", None)
+        result_data.pop("flashcards", None)
+        result_data.pop("exam_tips", None)
+        result_data.pop("glossary", None)
 
         result_data["sources"] = collected_sources
         result_data["video_metadata"] = video_metadata

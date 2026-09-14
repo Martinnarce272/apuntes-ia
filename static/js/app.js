@@ -708,32 +708,42 @@ document.addEventListener('DOMContentLoaded', () => {
             }).join('');
         }
 
-        // 3. Exam Tips
-        if (data.exam_tips && data.exam_tips.length > 0) {
-            elements.examTipsList.innerHTML = data.exam_tips.map(tip => `
-                <div class="exam-tip-item">
-                    <i class="fa-solid fa-crosshairs"></i>
-                    <p>${escapeHtml(tip)}</p>
-                </div>
-            `).join('');
-        } else {
-            elements.examTipsList.closest('.study-section').style.display = 'none';
+        // 3. Exam Tips (si existen en el DOM)
+        if (elements.examTipsList) {
+            if (data.exam_tips && data.exam_tips.length > 0) {
+                elements.examTipsList.innerHTML = data.exam_tips.map(tip => `
+                    <div class="exam-tip-item">
+                        <i class="fa-solid fa-crosshairs"></i>
+                        <p>${escapeHtml(tip)}</p>
+                    </div>
+                `).join('');
+                const section = elements.examTipsList.closest('.study-section');
+                if (section) section.style.display = 'block';
+            } else {
+                const section = elements.examTipsList.closest('.study-section');
+                if (section) section.style.display = 'none';
+            }
         }
 
-        // 4. Glossary
-        if (data.glossary && data.glossary.length > 0) {
-            elements.glossaryGrid.innerHTML = data.glossary.map(item => `
-                <div class="glossary-item">
-                    <dt>${escapeHtml(item.term)}</dt>
-                    <dd>${escapeHtml(item.definition)}</dd>
-                </div>
-            `).join('');
-        } else {
-            elements.glossaryGrid.closest('.study-section').style.display = 'none';
+        // 4. Glossary (si existe en el DOM)
+        if (elements.glossaryGrid) {
+            if (data.glossary && data.glossary.length > 0) {
+                elements.glossaryGrid.innerHTML = data.glossary.map(item => `
+                    <div class="glossary-item">
+                        <dt>${escapeHtml(item.term)}</dt>
+                        <dd>${escapeHtml(item.definition)}</dd>
+                    </div>
+                `).join('');
+                const section = elements.glossaryGrid.closest('.study-section');
+                if (section) section.style.display = 'block';
+            } else {
+                const section = elements.glossaryGrid.closest('.study-section');
+                if (section) section.style.display = 'none';
+            }
         }
 
         // Render Math (KaTeX) in the document
-        if (window.renderMathInElement) {
+        if (window.renderMathInElement && elements.developmentsContainer) {
             renderMathInElement(elements.developmentsContainer, {
                 delimiters: [
                     { left: '$$', right: '$$', display: true },
@@ -743,24 +753,35 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        // 5. Flashcards
-        state.flashcards = data.flashcards || [];
-        state.currentFlashcardIndex = 0;
-        elements.flashcardsCountBadge.textContent = state.flashcards.length;
-        elements.totalCardsNum.textContent = state.flashcards.length;
-        if (state.flashcards.length > 0) {
-            displayFlashcard(0);
+        // 5. Flashcards (opcional / omitido)
+        if (elements.flashcardsCountBadge && elements.activeFlashcard) {
+            state.flashcards = data.flashcards || [];
+            state.currentFlashcardIndex = 0;
+            elements.flashcardsCountBadge.textContent = state.flashcards.length;
+            if (elements.totalCardsNum) elements.totalCardsNum.textContent = state.flashcards.length;
+            if (state.flashcards.length > 0) {
+                displayFlashcard(0);
+            }
         }
 
-        // 6. Quiz
-        renderQuiz(data.quiz || []);
+        // 6. Quiz (opcional / omitido)
+        if (elements.quizContainer) {
+            renderQuiz(data.quiz || []);
+        }
 
-        // 7. Global Diagram (Tab 4)
+        // 7. Global Diagram (Integrado en el apunte)
+        const diagSection = document.getElementById('integrated-diagram-section');
         if (data.general_diagram && data.general_diagram.mermaid_code) {
-            elements.diagramTitle.textContent = data.general_diagram.title || 'Mapa Conceptual Global';
-            elements.mermaidGlobalContainer.setAttribute('data-mermaid', encodeURIComponent(data.general_diagram.mermaid_code));
+            if (diagSection) diagSection.classList.remove('hidden');
+            if (elements.diagramTitle) elements.diagramTitle.textContent = data.general_diagram.title || 'Mapa Conceptual Global';
+            if (elements.mermaidGlobalContainer) {
+                elements.mermaidGlobalContainer.setAttribute('data-mermaid', encodeURIComponent(data.general_diagram.mermaid_code));
+            }
         } else {
-            elements.mermaidGlobalContainer.innerHTML = '<p class="text-muted">No se generó un diagrama global para este tema.</p>';
+            if (diagSection) diagSection.classList.add('hidden');
+            if (elements.mermaidGlobalContainer) {
+                elements.mermaidGlobalContainer.innerHTML = '';
+            }
         }
 
         // Render all Mermaid diagrams
@@ -818,47 +839,57 @@ document.addEventListener('DOMContentLoaded', () => {
     // 6. Flashcard Interactions
     // --------------------------------------------------------------------------
     function displayFlashcard(index) {
-        if (!state.flashcards || state.flashcards.length === 0) return;
+        if (!elements.activeFlashcard || !state.flashcards || state.flashcards.length === 0) return;
         
         elements.activeFlashcard.classList.remove('flipped');
         const card = state.flashcards[index];
-        elements.currentCardNum.textContent = index + 1;
-        elements.cardTopicFront.textContent = card.topic || 'Concepto';
-        elements.cardQuestionText.textContent = card.question || '';
-        elements.cardAnswerText.textContent = card.answer || '';
+        if (elements.currentCardNum) elements.currentCardNum.textContent = index + 1;
+        if (elements.cardTopicFront) elements.cardTopicFront.textContent = card.topic || 'Concepto';
+        if (elements.cardQuestionText) elements.cardQuestionText.textContent = card.question || '';
+        if (elements.cardAnswerText) elements.cardAnswerText.textContent = card.answer || '';
     }
 
-    elements.activeFlashcard.addEventListener('click', () => {
-        elements.activeFlashcard.classList.toggle('flipped');
-    });
+    if (elements.activeFlashcard) {
+        elements.activeFlashcard.addEventListener('click', () => {
+            elements.activeFlashcard.classList.toggle('flipped');
+        });
+    }
 
-    elements.btnFlipCard.addEventListener('click', () => {
-        elements.activeFlashcard.classList.toggle('flipped');
-    });
+    if (elements.btnFlipCard) {
+        elements.btnFlipCard.addEventListener('click', () => {
+            if (elements.activeFlashcard) elements.activeFlashcard.classList.toggle('flipped');
+        });
+    }
 
-    elements.btnPrevCard.addEventListener('click', () => {
-        if (state.currentFlashcardIndex > 0) {
-            state.currentFlashcardIndex--;
-            displayFlashcard(state.currentFlashcardIndex);
-        }
-    });
+    if (elements.btnPrevCard) {
+        elements.btnPrevCard.addEventListener('click', () => {
+            if (state.currentFlashcardIndex > 0) {
+                state.currentFlashcardIndex--;
+                displayFlashcard(state.currentFlashcardIndex);
+            }
+        });
+    }
 
-    elements.btnNextCard.addEventListener('click', () => {
-        if (state.currentFlashcardIndex < state.flashcards.length - 1) {
-            state.currentFlashcardIndex++;
-            displayFlashcard(state.currentFlashcardIndex);
-        }
-    });
+    if (elements.btnNextCard) {
+        elements.btnNextCard.addEventListener('click', () => {
+            if (state.currentFlashcardIndex < state.flashcards.length - 1) {
+                state.currentFlashcardIndex++;
+                displayFlashcard(state.currentFlashcardIndex);
+            }
+        });
+    }
 
     // --------------------------------------------------------------------------
     // 7. Quiz Interactions
     // --------------------------------------------------------------------------
     function renderQuiz(quizList) {
+        if (!elements.quizContainer) return;
+
         state.quizAnswers = {};
         state.quizScore = 0;
-        elements.quizCountBadge.textContent = quizList.length;
-        elements.quizTotalValue.textContent = quizList.length;
-        elements.quizScoreBadge.classList.add('hidden');
+        if (elements.quizCountBadge) elements.quizCountBadge.textContent = quizList.length;
+        if (elements.quizTotalValue) elements.quizTotalValue.textContent = quizList.length;
+        if (elements.quizScoreBadge) elements.quizScoreBadge.classList.add('hidden');
 
         if (!quizList || quizList.length === 0) {
             elements.quizContainer.innerHTML = '<p class="text-muted">No se generaron preguntas para este contenido.</p>';
@@ -914,26 +945,32 @@ document.addEventListener('DOMContentLoaded', () => {
                     opt.classList.add('selected', isCorrect ? 'correct' : 'incorrect');
 
                     // Show explanation
-                    feedback.classList.remove('hidden');
-                    feedback.className = `quiz-feedback ${isCorrect ? 'correct' : 'incorrect'}`;
-                    feedback.innerHTML = `
-                        <strong>${isCorrect ? '¡Correcto!' : 'Respuesta Incorrecta'}</strong><br>
-                        ${escapeHtml(questionData.explanation || '')}
-                    `;
+                    if (feedback) {
+                        feedback.classList.remove('hidden');
+                        feedback.className = `quiz-feedback ${isCorrect ? 'correct' : 'incorrect'}`;
+                        feedback.innerHTML = `
+                            <strong>${isCorrect ? '¡Correcto!' : 'Respuesta Incorrecta'}</strong><br>
+                            ${escapeHtml(questionData.explanation || '')}
+                        `;
+                    }
 
                     // Update total score badge
-                    elements.quizScoreBadge.classList.remove('hidden');
-                    elements.quizScoreValue.textContent = state.quizScore;
+                    if (elements.quizScoreBadge && elements.quizScoreValue) {
+                        elements.quizScoreBadge.classList.remove('hidden');
+                        elements.quizScoreValue.textContent = state.quizScore;
+                    }
                 });
             });
         });
     }
 
-    elements.btnResetQuiz.addEventListener('click', () => {
-        if (state.currentResult && state.currentResult.quiz) {
-            renderQuiz(state.currentResult.quiz);
-        }
-    });
+    if (elements.btnResetQuiz) {
+        elements.btnResetQuiz.addEventListener('click', () => {
+            if (state.currentResult && state.currentResult.quiz) {
+                renderQuiz(state.currentResult.quiz);
+            }
+        });
+    }
 
     // --------------------------------------------------------------------------
     // 8. Tabs & Navigation

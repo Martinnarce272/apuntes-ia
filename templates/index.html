@@ -25,7 +25,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=7.0">
 </head>
 <body>
     <div class="app-container">
@@ -237,33 +237,17 @@
                     </div>
                 </div>
 
-                <!-- Content Tabs -->
-                <div class="study-tabs">
-                    <button class="tab-btn active" data-tab="tab-notes">
-                        <i class="fa-solid fa-book-bookmark"></i> Apunte Maestro & Fórmulas
-                    </button>
-                    <button class="tab-btn" data-tab="tab-diagram">
-                        <i class="fa-solid fa-diagram-project"></i> Mapa Conceptual
-                    </button>
-                    <button class="tab-btn" data-tab="tab-flashcards" style="display:none">
-                        <i class="fa-solid fa-clone"></i> Flashcards (<span id="flashcards-count">0</span>)
-                    </button>
-                    <button class="tab-btn" data-tab="tab-quiz" style="display:none">
-                        <i class="fa-solid fa-list-check"></i> Examen (<span id="quiz-count">0</span>)
-                    </button>
-                </div>
-
-                <!-- TAB 1: NOTES & DEVELOPMENTS -->
+                <!-- TAB 1: NOTES & DEVELOPMENTS (APUNTE Y RESUMEN) -->
                 <div id="tab-notes" class="tab-pane active">
                     <article id="printable-document" class="academic-document">
                         <!-- Document Header -->
                         <div class="doc-header">
-                            <span class="doc-tag"><i class="fa-solid fa-sparkles"></i> Material de Estudio Generado por IA</span>
+                            <span class="doc-tag"><i class="fa-solid fa-sparkles"></i> Apunte y Resumen de Estudio</span>
                             <h1 id="note-main-title" class="doc-title">Título del Tema</h1>
                             <p id="note-overview" class="doc-overview">Descripción del contenido...</p>
                             
                             <div class="doc-info-chips">
-                                <span class="info-chip"><i class="fa-regular fa-clock"></i> Tiempo estimado: <strong id="note-est-time">25 min</strong></span>
+                                <span class="info-chip"><i class="fa-regular fa-clock"></i> Tiempo estimado: <strong id="note-est-time">20 min</strong></span>
                                 <span class="info-chip" id="source-chips-container"></span>
                             </div>
                         </div>
@@ -274,121 +258,36 @@
                                 <i class="fa-solid fa-lightbulb"></i>
                                 <h2>Cosas Importantes & Reglas de Oro</h2>
                             </div>
-                            <p class="section-lead">Conceptos no negociables que debes dominar para entender y aprobar el tema:</p>
+                            <p class="section-lead">Conceptos y reglas fundamentales para dominar el tema:</p>
                             <div id="key-takeaways-grid" class="takeaways-grid">
                                 <!-- Dynamically populated cards -->
                             </div>
                         </div>
 
-                        <!-- SECTION: DESARROLLOS PASO A PASO -->
+                        <!-- SECTION: MAPA CONCEPTUAL (INTEGRADO EN EL APUNTE) -->
+                        <div id="integrated-diagram-section" class="study-section diagram-section hidden">
+                            <div class="section-title-wrap">
+                                <i class="fa-solid fa-diagram-project"></i>
+                                <h2>Mapa Conceptual Global</h2>
+                            </div>
+                            <div class="diagram-wrapper glass-card">
+                                <div id="mermaid-global-container" class="mermaid-box">
+                                    <!-- Rendered Mermaid diagram -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- SECTION: DESARROLLOS PASO A PASO CON FÓRMULAS Y RECORTES -->
                         <div class="study-section developments-section">
                             <div class="section-title-wrap">
                                 <i class="fa-solid fa-cubes-stacked"></i>
-                                <h2>Desarrollo Exhaustivo de los Temas</h2>
+                                <h2>Desarrollo y Explicación de los Temas</h2>
                             </div>
                             <div id="developments-container" class="developments-list">
                                 <!-- Dynamically populated units -->
                             </div>
                         </div>
-
-                        <!-- SECTION: TIPS DE EXAMEN -->
-                        <div class="study-section exam-tips-section">
-                            <div class="section-title-wrap">
-                                <i class="fa-solid fa-bullseye"></i>
-                                <h2>Puntos Clave y Trampas de Examen</h2>
-                            </div>
-                            <div id="exam-tips-list" class="exam-tips-container">
-                                <!-- Dynamically populated tips -->
-                            </div>
-                        </div>
-
-                        <!-- SECTION: GLOSARIO -->
-                        <div class="study-section glossary-section">
-                            <div class="section-title-wrap">
-                                <i class="fa-solid fa-spell-check"></i>
-                                <h2>Glosario de Términos Clave</h2>
-                            </div>
-                            <div id="glossary-grid" class="glossary-container">
-                                <!-- Dynamically populated terms -->
-                            </div>
-                        </div>
                     </article>
-                </div>
-
-                <!-- TAB 2: FLASHCARDS (Oculto - Solo Apunte) -->
-                <div id="tab-flashcards" class="tab-pane" style="display:none">
-                    <div class="flashcards-wrapper">
-                        <div class="flashcards-header">
-                            <div>
-                                <h3>Tarjetas de Repaso Activo (Flashcards)</h3>
-                                <p>Haz clic en la tarjeta para voltearla. Utilízala para evaluar tu memoria.</p>
-                            </div>
-                            <div class="flashcard-counter">
-                                Tarjeta <span id="current-card-num">1</span> de <span id="total-cards-num">0</span>
-                            </div>
-                        </div>
-
-                        <div class="flashcard-scene">
-                            <div id="active-flashcard" class="flashcard-card">
-                                <div class="flashcard-face flashcard-front">
-                                    <span class="card-badge" id="card-topic-front">Tema</span>
-                                    <div class="card-body">
-                                        <p id="card-question-text">Pregunta...</p>
-                                    </div>
-                                    <span class="card-hint"><i class="fa-solid fa-hand-pointer"></i> Clic para voltear y ver la respuesta</span>
-                                </div>
-                                <div class="flashcard-face flashcard-back">
-                                    <span class="card-badge success">Respuesta</span>
-                                    <div class="card-body">
-                                        <p id="card-answer-text">Respuesta...</p>
-                                    </div>
-                                    <span class="card-hint"><i class="fa-solid fa-arrow-rotate-left"></i> Clic para volver a la pregunta</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="flashcard-controls">
-                            <button id="btn-prev-card" class="btn-secondary"><i class="fa-solid fa-arrow-left"></i> Anterior</button>
-                            <button id="btn-flip-card" class="btn-primary"><i class="fa-solid fa-rotate"></i> Voltear</button>
-                            <button id="btn-next-card" class="btn-secondary">Siguiente <i class="fa-solid fa-arrow-right"></i></button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- TAB 3: QUIZ (Oculto - Solo Apunte) -->
-                <div id="tab-quiz" class="tab-pane" style="display:none">
-                    <div class="quiz-wrapper glass-card">
-                        <div class="quiz-header">
-                            <div>
-                                <h3>Simulador de Examen</h3>
-                                <p>Pon a prueba lo que acabas de aprender con estas preguntas tipo examen.</p>
-                            </div>
-                            <div id="quiz-score-badge" class="quiz-score-chip hidden">
-                                Puntaje: <span id="quiz-score-value">0</span> / <span id="quiz-total-value">0</span>
-                            </div>
-                        </div>
-
-                        <div id="quiz-container" class="quiz-questions-list">
-                            <!-- Populated with quiz questions -->
-                        </div>
-
-                        <div class="quiz-footer">
-                            <button id="btn-reset-quiz" class="btn-secondary"><i class="fa-solid fa-arrow-rotate-right"></i> Reiniciar Quiz</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- TAB 4: DIAGRAMA GLOBAL -->
-                <div id="tab-diagram" class="tab-pane">
-                    <div class="diagram-wrapper glass-card">
-                        <div class="diagram-header">
-                            <h3 id="diagram-title">Mapa Conceptual y Relaciones</h3>
-                            <p>Estructura lógica global de los temas analizados.</p>
-                        </div>
-                        <div id="mermaid-global-container" class="mermaid-box">
-                            <!-- Rendered Mermaid diagram -->
-                        </div>
-                    </div>
                 </div>
             </section>
         </main>
@@ -446,6 +345,6 @@
     </div>
 
     <!-- Application Script -->
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=7.0"></script>
 </body>
 </html>
