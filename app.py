@@ -134,6 +134,24 @@ def get_youtube_metadata(video_id):
         "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
     }
 
+def get_youtube_duration_seconds(video_id):
+    """Retrieve video duration in seconds using official YouTube player endpoint or fallback."""
+    try:
+        url = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+        payload = {
+            "context": {"client": {"clientName": "ANDROID", "clientVersion": "20.10.38", "androidSdkVersion": 34, "hl": "es"}},
+            "videoId": video_id
+        }
+        headers = {"User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)", "Content-Type": "application/json"}
+        resp = requests.post(url, json=payload, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            sec = resp.json().get("videoDetails", {}).get("lengthSeconds")
+            if sec and int(sec) > 0:
+                return int(sec)
+    except Exception:
+        pass
+    return 3600
+
 def get_youtube_transcript(video_id):
     """Extract transcript with timestamps from YouTube supporting modern and legacy APIs."""
     try:
@@ -545,6 +563,7 @@ def generate_notes():
     
     collected_sources = []
     source_texts = []
+    gemini_video_parts = []
     video_metadata = None
 
     # 1. Process YouTube videos if provided (supports multiple URLs)
@@ -567,23 +586,47 @@ def generate_notes():
         v_meta = get_youtube_metadata(video_id)
         transcript_res = get_youtube_transcript(video_id)
         
-        if not transcript_res["success"]:
-            return jsonify({
-                "success": False, 
-                "error": f"Error en video #{idx+1} ('{v_meta['title']}'): {transcript_res['error']}"
-            }), 400
+        if transcript_res.get("success"):
+            collected_sources.append({
+                "type": "youtube",
+                "title": v_meta["title"],
+                "id": video_id,
+                "thumbnail": v_meta["thumbnail"],
+                "has_captions": True,
+                "order": idx + 1
+            })
+            source_texts.append(
+                f"=== FUENTE VIDEO DE YOUTUBE #{idx+1}: '{v_meta['title']}' ===\n"
+                f"Transcripción con marcas de tiempo:\n{transcript_res['timed_text']}"
+            )
+        else:
+            # Video sin subtítulos: procesamiento audiovisual multimodal directo con Gemini
+            duration_sec = get_youtube_duration_seconds(video_id)
+            fps = 0.1 if duration_sec > 1200 else 0.5
             
-        collected_sources.append({
-            "type": "youtube",
-            "title": v_meta["title"],
-            "id": video_id,
-            "thumbnail": v_meta["thumbnail"],
-            "order": idx + 1
-        })
-        source_texts.append(
-            f"=== FUENTE VIDEO DE YOUTUBE #{idx+1}: '{v_meta['title']}' ===\n"
-            f"Transcripción con marcas de tiempo:\n{transcript_res['timed_text']}"
-        )
+            try:
+                from google.genai import types
+                video_part = types.Part(
+                    file_data=types.FileData(file_uri=f"https://www.youtube.com/watch?v={video_id}"),
+                    video_metadata=types.VideoMetadata(fps=fps)
+                )
+                gemini_video_parts.append(video_part)
+            except Exception as pe:
+                print(f"Error creando Part para video {video_id}: {pe}")
+                
+            collected_sources.append({
+                "type": "youtube",
+                "title": v_meta["title"],
+                "id": video_id,
+                "thumbnail": v_meta["thumbnail"],
+                "has_captions": False,
+                "mode": "multimodal_vision",
+                "order": idx + 1
+            })
+            source_texts.append(
+                f"=== FUENTE VIDEO DE YOUTUBE #{idx+1} (SIN SUBTÍTULOS - ANÁLISIS MULTIMODAL DIRECTO): '{v_meta['title']}' (ID: {video_id}) ===\n"
+                f"[Video procesado directamente por comprensión audiovisual de Gemini: extrae rigurosamente todo el contenido a partir de la explicación del docente/orador, diapositivas, fórmulas en pizarra y demostraciones visuales]."
+            )
 
     # 2. Process uploaded PDF files if provided
     uploaded_files = request.files.getlist('pdfFiles')
@@ -607,7 +650,7 @@ def generate_notes():
             else:
                 return jsonify({"success": False, "error": pdf_res["error"]}), 400
 
-    if not source_texts:
+    if not source_texts and not gemini_video_parts:
         return jsonify({"success": False, "error": "Debes proporcionar al menos un enlace de YouTube o un archivo PDF."}), 400
 
     # Assemble User Prompt
@@ -617,7 +660,7 @@ def generate_notes():
         "exhaustivo": "Nivel de profundidad: GUÍA EXHAUSTIVA DE ESTUDIO. Máximo nivel de detalle pedagógico, desglosando cada subtema, fórmula, demostración y casos prácticos."
     }.get(depth_level, "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO.")
 
-    multi_source_hint = f"\nNOTA PEDAGÓGICA: Has recibido {len(source_texts)} fuentes distintas (pueden ser partes consecutivas de una clase o serie, o documentos complementarios). Sintetiza y unifica todo el material en un único Apunte Maestro armónico, integrando ordenadamente los contenidos de todas las partes sin redundancias.\n" if len(source_texts) > 1 else ""
+    multi_source_hint = f"\nNOTA PEDAGÓGICA: Has recibido {len(collected_sources)} fuentes distintas (pueden ser partes consecutivas de una clase o serie, o documentos complementarios). Sintetiza y unifica todo el material en un único Apunte Maestro armónico, integrando ordenadamente los contenidos de todas las partes sin redundancias.\n" if len(collected_sources) > 1 else ""
 
     user_prompt = f"""
 {depth_instructions}
@@ -626,7 +669,7 @@ def generate_notes():
 
 A continuación tienes el material fuente para analizar y sintetizar:
 
-{"---".join(source_texts)}
+{"\n\n---\n\n".join(source_texts)}
 
 Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
 """
@@ -645,17 +688,19 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
         )
 
         import time
-        # Try current models: gemini-3.6-flash, gemini-3.7-flash, gemini-3.5-flash-lite
-        models_to_try = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"]
+        # Principal: gemini-3.7-flash, Fallback: gemini-3.6-flash
+        models_to_try = ["gemini-3.7-flash", "gemini-3.6-flash"]
         response = None
         last_error = None
         
+        contents_payload = gemini_video_parts + [types.Part.from_text(text=user_prompt)] if gemini_video_parts else user_prompt
+
         for model_name in models_to_try:
             for attempt in range(2):
                 try:
                     response = client.models.generate_content(
                         model=model_name,
-                        contents=user_prompt,
+                        contents=contents_payload,
                         config=config
                     )
                     if response and response.text:
