@@ -1,6 +1,6 @@
 # SintesisAI (ApuntesIA) — Generador Inteligente de Apuntes con IA
 
-Aplicación web full-stack para transformar videos de YouTube (con o sin subtítulos) y documentos PDF en **Apuntes de Estudio Maestros** interactivos, estructurados con fórmulas LaTeX, diagramas conceptuales Mermaid.js, flashcards 3D y exámenes de autoevaluación interactivos, potenciada por **Google Gemini API**.
+Aplicación web full-stack para transformar videos de YouTube (con o sin subtítulos) y documentos PDF en **Apuntes de Estudio Maestros** profundos y estructurados, enriquecidos con fórmulas matemáticas en LaTeX, diagramas conceptuales Mermaid.js y recortes interactivos en el momento exacto del video, potenciada por **Google Gemini API**.
 
 ---
 
@@ -10,12 +10,12 @@ Aplicación web full-stack para transformar videos de YouTube (con o sin subtít
 - **Videos con Subtítulos:** Extracción ultrarrápida de transcripciones oficiales o autogeneradas con marcas de tiempo `[MM:SS]` vía `youtube-transcript-api`.
 - **Videos sin Subtítulos (Multimodal Vision):** Análisis audiovisual nativo con la API de Google Gemini (`google-genai`), con muestreo de FPS adaptativo según la duración y procesamiento secuencial para optimizar memoria RAM.
 - **Documentos PDF:** Procesamiento y limpieza de texto página por página con `pypdf`.
-- **Salida Pedagógica Estructurada:**
-  - Resumen ejecutivo y conceptos clave.
-  - Desarrollos temáticos profundos con fórmulas matemáticas en LaTeX ($\LaTeX$) y diagramas Mermaid.js.
-  - Flashcards interactivas con animación 3D de volteo.
-  - Examen tipo test (Quiz) con retroalimentación instantánea.
-  - Glosario técnico y consejos de examen.
+- **Salida Pedagógica 100% Enfocada en el Apunte:**
+  - Resumen ejecutivo, ideas principales y reglas de oro.
+  - Desarrollos temáticos profundos paso a paso.
+  - Fórmulas matemáticas en LaTeX ($\LaTeX$) vinculadas al momento del video donde aparecen en pizarra/pantalla.
+  - Recortes visuales de video sincronizados al segundo exacto para consultar pizarras, diapositivas y demostraciones.
+  - Diagramas conceptuales Mermaid.js para relaciones y flujos de conceptos.
 - **Exportación:** Copia directa a Markdown y vista de impresión optimizada para guardar como PDF.
 
 ---

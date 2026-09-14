@@ -209,7 +209,7 @@
                     <div class="step-indicators">
                         <div class="step-item active" id="step-1"><i class="fa-solid fa-check"></i> Ingesta de fuentes</div>
                         <div class="step-item" id="step-2"><i class="fa-solid fa-circle"></i> Síntesis y Desarrollos</div>
-                        <div class="step-item" id="step-3"><i class="fa-solid fa-circle"></i> Generando Diagramas & Quizzes</div>
+                        <div class="step-item" id="step-3"><i class="fa-solid fa-circle"></i> Fórmulas, Diagramas y Apunte</div>
                     </div>
                 </div>
             </section>
@@ -240,16 +240,16 @@
                 <!-- Content Tabs -->
                 <div class="study-tabs">
                     <button class="tab-btn active" data-tab="tab-notes">
-                        <i class="fa-solid fa-book-bookmark"></i> Apunte & Desarrollos
-                    </button>
-                    <button class="tab-btn" data-tab="tab-flashcards">
-                        <i class="fa-solid fa-clone"></i> Flashcards (<span id="flashcards-count">0</span>)
-                    </button>
-                    <button class="tab-btn" data-tab="tab-quiz">
-                        <i class="fa-solid fa-list-check"></i> Examen de Prueba (<span id="quiz-count">0</span>)
+                        <i class="fa-solid fa-book-bookmark"></i> Apunte Maestro & Fórmulas
                     </button>
                     <button class="tab-btn" data-tab="tab-diagram">
                         <i class="fa-solid fa-diagram-project"></i> Mapa Conceptual
+                    </button>
+                    <button class="tab-btn" data-tab="tab-flashcards" style="display:none">
+                        <i class="fa-solid fa-clone"></i> Flashcards (<span id="flashcards-count">0</span>)
+                    </button>
+                    <button class="tab-btn" data-tab="tab-quiz" style="display:none">
+                        <i class="fa-solid fa-list-check"></i> Examen (<span id="quiz-count">0</span>)
                     </button>
                 </div>
 
@@ -315,8 +315,8 @@
                     </article>
                 </div>
 
-                <!-- TAB 2: FLASHCARDS -->
-                <div id="tab-flashcards" class="tab-pane">
+                <!-- TAB 2: FLASHCARDS (Oculto - Solo Apunte) -->
+                <div id="tab-flashcards" class="tab-pane" style="display:none">
                     <div class="flashcards-wrapper">
                         <div class="flashcards-header">
                             <div>
@@ -355,8 +355,8 @@
                     </div>
                 </div>
 
-                <!-- TAB 3: QUIZ DE AUTOEVALUACIÓN -->
-                <div id="tab-quiz" class="tab-pane">
+                <!-- TAB 3: QUIZ (Oculto - Solo Apunte) -->
+                <div id="tab-quiz" class="tab-pane" style="display:none">
                     <div class="quiz-wrapper glass-card">
                         <div class="quiz-header">
                             <div>

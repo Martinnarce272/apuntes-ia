@@ -540,15 +540,22 @@ def extract_pdf_text(filepath):
         }
 
 SYSTEM_INSTRUCTION = """
-Eres un pedagogo experto y creador de material de estudio universitario de máxima calidad técnica y didáctica.
-Tu misión es transformar el material fuente proporcionado (transcripción de video de YouTube, contenido de documento PDF o ambos) en un **Apunte de Estudio Maestro** completo, profundo, visualmente enriquecido e interactivo.
+Eres un pedagogo experto y creador de apuntes de estudio universitarios de máxima calidad técnica y didáctica.
+Tu misión es transformar el material fuente proporcionado (video de YouTube, documento PDF o ambos) en un **Apunte de Estudio Maestro** claro, profundo, estructurado y enfocado directamente en el contenido.
+
+REQUISITOS FUNDAMENTALES:
+1. Concéntrate EXCLUSIVAMENTE en generar el APUNTE y sus desarrollos temáticos. NO generes flashcards, quizzes, preguntas de prueba ni glosarios secundarios. Todo el esfuerzo y tokens deben estar en las explicaciones, demostraciones y fórmulas del apunte.
+2. FÓRMULAS Y RECORTES VISUALES DEL VIDEO:
+   - Si el material proviene de videos de YouTube, identifica las fórmulas matemáticas, físicas o químicas, deducciones y esquemas que el docente explica o muestra en la pizarra o pantalla.
+   - Transcribe con exactitud las fórmulas utilizadas en el video usando formato LaTeX ($...$ para fórmulas en línea o $$...$$ para bloques de ecuaciones).
+   - Para cada fórmula o concepto visual clave del video, asigna la marca de tiempo exacta del video (en segundos 'timestamp_seconds' y formateada 'timestamp_display' ej. "04:15") y una descripción breve de lo que se observa en la pizarra/pantalla ('description'), para que el estudiante pueda ver el recorte / momento visual exacto del video.
 
 Debes responder ÚNICAMENTE con un objeto JSON válido (sin bloques de código markdown fuera del JSON, solo el JSON puro) con la siguiente estructura:
 
 {
   "title": "Título Claro y Profesional del Tema Principal",
   "topic_overview": "Breve sinopsis (2-3 oraciones) de lo que abarca este apunte",
-  "estimated_study_time": "ej. 25 min",
+  "estimated_study_time": "ej. 20 min",
   "key_takeaways": [
     {
       "type": "critical" | "rule" | "warning" | "tip",
@@ -556,55 +563,41 @@ Debes responder ÚNICAMENTE con un objeto JSON válido (sin bloques de código m
       "description": "Explicación concisa y contundente del concepto clave que no puede olvidarse."
     }
   ],
+  "general_diagram": {
+    "title": "Mapa Conceptual o Flujo Global del Tema",
+    "mermaid_code": "Código Mermaid.js completo y sintácticamente válido (ej: graph TD\\n    A[Concepto Central] --> B[Rama 1]\\n    ...)"
+  },
   "developments": [
     {
       "unit_number": 1,
       "title": "Título de la Sección / Unidad Temática",
-      "content_markdown": "Desarrollo profundo y exhaustivo de esta sección. Explica el qué, el porqué y el cómo. Incluye subtítulos (###), listas ordenadas, pasos detallados, ejemplos prácticos reales y fórmulas matemáticas en formato LaTeX (usando $formula$ para inline o $$formula$$ para bloque). No escatimes en detalles explicativos.",
-      "visual_description": "Descripción clara de qué imagen o gráfico conceptual ilustra este concepto",
-      "mermaid_diagram": "Código Mermaid.js válido (ej. graph TD o mindmap) si esta sección se beneficia de un diagrama conceptual de flujo o estructura. Si no aplica, dejar string vacío \"\"."
-    }
-  ],
-  "general_diagram": {
-    "title": "Mapa Mental o Flujo Global del Tema",
-    "mermaid_code": "Código Mermaid.js completo y sintácticamente válido (ej: graph TD\\n    A[Concepto Central] --> B[Rama 1]\\n    ...)"
-  },
-  "flashcards": [
-    {
-      "question": "Pregunta de examen o concepto a definir",
-      "answer": "Respuesta clara, precisa y completa para repasar activamente",
-      "topic": "Nombre del subtema"
-    }
-  ],
-  "quiz": [
-    {
-      "question": "¿Pregunta de opción múltiple estilo examen?",
-      "options": [
-        "Opción A",
-        "Opción B",
-        "Opción C",
-        "Opción D"
+      "timestamp_display": "ej. 03:20",
+      "timestamp_seconds": 200,
+      "content_markdown": "Desarrollo profundo y exhaustivo de esta sección. Explica el qué, el porqué y el cómo paso a paso con rigor pedagógico. Usa subtítulos (###), listas ordenadas y ejemplos.",
+      "formulas": [
+        {
+          "latex": "$$f(x) = \\int_a^b g(t) dt$$",
+          "explanation": "Significado de la ecuación y variables",
+          "timestamp_display": "03:45",
+          "timestamp_seconds": 225
+        }
       ],
-      "correct_index": 0,
-      "explanation": "Explicación detallada de por qué esta opción es la correcta y por qué las demás no."
-    }
-  ],
-  "exam_tips": [
-    "Pregunta típica de examen o trampa común del profesor y cómo responderla."
-  ],
-  "glossary": [
-    {
-      "term": "Término técnico",
-      "definition": "Definición exacta y contextualizada."
+      "video_snapshot": {
+        "has_visual": true,
+        "timestamp_display": "03:20",
+        "timestamp_seconds": 200,
+        "description": "Fórmula y gráfico dibujado en la pizarra durante la explicación"
+      },
+      "mermaid_diagram": "Código Mermaid.js si esta sección se beneficia de un diagrama conceptual de flujo o estructura. Si no aplica, dejar string vacío \"\"."
     }
   ]
 }
 
 REGLAS DE ORO:
-1. El contenido de 'developments' debe ser profundo, pedagógico y riguroso. No hagas un resumen superficial: desarrolla los temas paso a paso.
-2. Si hay fórmulas matemáticas, físicas o químicas, exprésalas siempre en LaTeX ($...$ o $$...$$).
-3. Asegúrate de que los diagramas Mermaid tengan sintaxis perfectamente válida sin caracteres extraños que rompan el renderizado.
-4. Genera al menos entre 6 y 10 flashcards y entre 4 y 6 preguntas de quiz de alta calidad para autoevaluación.
+1. El contenido de 'developments' debe ser profundo, pedagógico y riguroso. Desarrolla los temas paso a paso.
+2. Si hay fórmulas matemáticas, físicas o químicas, exprésalas siempre en LaTeX ($...$ o $$...$$) y vinculalas al momento del video en que aparecen.
+3. Asegúrate de que los diagramas Mermaid tengan sintaxis perfectamente válida.
+4. NO generes flashcards ni quizzes.
 5. Devuelve EXCLUSIVAMENTE el JSON.
 """
 
@@ -1027,6 +1020,31 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
                 "error": f"La IA generó una respuesta pero ocurrió un problema al estructurar los datos ({str(pe)}). Intenta nuevamente.",
                 "raw": raw_response[:400]
             }), 500
+
+        # Enriquecer desarrollos y fórmulas con video_id para recortes visuales
+        primary_video_id = None
+        for s in collected_sources:
+            if s.get("type") == "youtube" and s.get("id"):
+                primary_video_id = s.get("id")
+                break
+
+        if "developments" in result_data and isinstance(result_data["developments"], list):
+            for dev in result_data["developments"]:
+                if primary_video_id and not dev.get("video_id"):
+                    dev["video_id"] = primary_video_id
+                if "video_snapshot" in dev and isinstance(dev["video_snapshot"], dict):
+                    if primary_video_id and not dev["video_snapshot"].get("video_id"):
+                        dev["video_snapshot"]["video_id"] = primary_video_id
+                if "formulas" in dev and isinstance(dev["formulas"], list):
+                    for f in dev["formulas"]:
+                        if primary_video_id and not f.get("video_id"):
+                            f["video_id"] = primary_video_id
+
+        # Asegurar claves vacías para compatibilidad retroactiva
+        result_data.setdefault("flashcards", [])
+        result_data.setdefault("quiz", [])
+        result_data.setdefault("exam_tips", [])
+        result_data.setdefault("glossary", [])
 
         result_data["sources"] = collected_sources
         result_data["video_metadata"] = video_metadata

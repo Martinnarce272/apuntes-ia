@@ -530,8 +530,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 pct += 1;
                 elements.progressBar.style.width = `${pct}%`;
                 elements.step3.className = 'step-item active';
-                elements.loadingStatusTitle.textContent = 'Generando diagramas visuales y quiz...';
-                elements.loadingStatusDesc.textContent = 'Construyendo flashcards interactivas y mapas conceptuales.';
+                elements.loadingStatusTitle.textContent = 'Estructurando fórmulas y apunte maestro...';
+                elements.loadingStatusDesc.textContent = 'Organizando desarrollos pedagógicos, deducciones y diagramas.';
             }
         }, 600);
     }
@@ -556,6 +556,13 @@ document.addEventListener('DOMContentLoaded', () => {
             elements.resultsView.classList.add('active');
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
+    }
+
+    function formatSeconds(sec) {
+        if (typeof sec !== 'number') sec = parseInt(sec) || 0;
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     }
 
     // --------------------------------------------------------------------------
@@ -609,26 +616,76 @@ document.addEventListener('DOMContentLoaded', () => {
                 const unitNum = dev.unit_number || (idx + 1);
                 const markdownParsed = marked.parse(dev.content_markdown || '');
                 
+                // Formulas del Video
+                let formulasHtml = '';
+                if (dev.formulas && Array.isArray(dev.formulas) && dev.formulas.length > 0) {
+                    formulasHtml = `
+                        <div class="unit-formulas-group">
+                            ${dev.formulas.map(f => {
+                                const latexCode = f.latex || '';
+                                const timeLabel = f.timestamp_display ? `[${escapeHtml(f.timestamp_display)}]` : '';
+                                return `
+                                    <div class="video-formula-box">
+                                        <div class="formula-top-bar">
+                                            <span class="formula-badge"><i class="fa-solid fa-square-root-variable"></i> Fórmula del Video ${timeLabel}</span>
+                                        </div>
+                                        <div class="formula-content math-renderable">
+                                            ${latexCode.startsWith('$') ? latexCode : `$$${latexCode}$$`}
+                                        </div>
+                                        ${f.explanation ? `<p class="formula-explanation">${escapeHtml(f.explanation)}</p>` : ''}
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    `;
+                }
+
+                // Recorte / Momento del Video
+                let videoMomentHtml = '';
+                const snap = dev.video_snapshot || {};
+                const startSec = snap.timestamp_seconds !== undefined ? snap.timestamp_seconds : dev.timestamp_seconds;
+                const timeDisplay = snap.timestamp_display || dev.timestamp_display || (startSec !== undefined ? formatSeconds(startSec) : null);
+                const snapDesc = snap.description || dev.visual_description || '';
+                const videoId = snap.video_id || dev.video_id || (data.sources && data.sources.find(s => s.type === 'youtube')?.id);
+
+                if (videoId && startSec !== undefined && startSec !== null) {
+                    videoMomentHtml = `
+                        <div class="video-moment-box">
+                            <div class="video-moment-header">
+                                <span class="video-moment-badge"><i class="fa-solid fa-film"></i> Recorte del Video ${timeDisplay ? `[${escapeHtml(timeDisplay)}]` : ''}</span>
+                                ${snapDesc ? `<span class="video-moment-desc">${escapeHtml(snapDesc)}</span>` : ''}
+                            </div>
+                            <div class="video-crop-player">
+                                <iframe src="https://www.youtube-nocookie.com/embed/${videoId}?start=${startSec}&autoplay=0" 
+                                        title="Recorte del video en ${timeDisplay || startSec}" 
+                                        frameborder="0" 
+                                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                                        allowfullscreen loading="lazy"></iframe>
+                            </div>
+                        </div>
+                    `;
+                }
+
                 // Optional inline diagram
                 let diagramHtml = '';
                 if (dev.mermaid_diagram && dev.mermaid_diagram.trim()) {
                     const diagId = `mermaid-dev-${idx}`;
                     diagramHtml = `
                         <div class="unit-diagram-box">
-                            <div class="unit-diagram-title"><i class="fa-solid fa-project-diagram"></i> Diagrama de Estructura / Proceso</div>
+                            <div class="unit-diagram-title"><i class="fa-solid fa-project-diagram"></i> Diagrama Conceptual</div>
                             <div id="${diagId}" class="mermaid-inline-diagram" data-mermaid="${encodeURIComponent(dev.mermaid_diagram)}"></div>
                         </div>
                     `;
                 }
 
-                // Visual concept illustration card
+                // Visual concept card if no video player
                 let visualCardHtml = '';
-                if (dev.visual_description && dev.visual_description.trim()) {
+                if (!videoMomentHtml && dev.visual_description && dev.visual_description.trim()) {
                     visualCardHtml = `
                         <div class="visual-concept-card">
                             <div class="visual-concept-icon"><i class="fa-solid fa-image"></i></div>
                             <div>
-                                <h5>Representación Visual Sugerida:</h5>
+                                <h5>Referencia Visual:</h5>
                                 <p>${escapeHtml(dev.visual_description)}</p>
                             </div>
                         </div>
@@ -642,6 +699,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="unit-content math-renderable">
                             ${markdownParsed}
                         </div>
+                        ${formulasHtml}
+                        ${videoMomentHtml}
                         ${diagramHtml}
                         ${visualCardHtml}
                     </div>
