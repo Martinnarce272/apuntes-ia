@@ -582,7 +582,8 @@ def debug_youtube(video_id):
 
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        tl = YouTubeTranscriptApi.list_transcripts(video_id)
+        api = YouTubeTranscriptApi()
+        tl = api.list(video_id)
         results["transcript_api_list"] = [t.language_code for t in tl]
     except Exception as e:
         results["transcript_api_error"] = str(e)
