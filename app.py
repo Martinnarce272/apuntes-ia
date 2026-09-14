@@ -546,59 +546,6 @@ def youtube_transcript():
         "error": "No se encontraron subtítulos ni transcripciones para este video en YouTube."
     }), 404
 
-@app.route('/api/debug-youtube/<video_id>')
-def debug_youtube(video_id):
-    results = {}
-    try:
-        url = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-        payload = {
-            "context": {
-                "client": {
-                    "clientName": "ANDROID",
-                    "clientVersion": "20.10.38",
-                    "androidSdkVersion": 34,
-                    "hl": "es",
-                    "gl": "ES",
-                    "utcOffsetMinutes": 0
-                }
-            },
-            "videoId": video_id
-        }
-        headers = {
-            "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
-            "Content-Type": "application/json"
-        }
-        r = requests.post(url, json=payload, headers=headers, timeout=10)
-        results["innertube_status_code"] = r.status_code
-        if r.status_code == 200:
-            rj = r.json()
-            results["playability"] = rj.get("playabilityStatus", {})
-            results["has_captions"] = bool(rj.get("captions"))
-            results["has_streaming"] = bool(rj.get("streamingData"))
-        else:
-            results["innertube_body"] = r.text[:300]
-    except Exception as e:
-        results["innertube_error"] = str(e)
-
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-        api = YouTubeTranscriptApi()
-        tl = api.list(video_id)
-        results["transcript_api_list"] = [t.language_code for t in tl]
-    except Exception as e:
-        results["transcript_api_error"] = str(e)
-
-    try:
-        with yt_dlp.YoutubeDL({'quiet': True, 'extractor_args': {'youtube': {'player_client': ['android']}}}) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-            results["ytdlp_title"] = info.get("title")
-            results["ytdlp_subs"] = list(info.get("subtitles", {}).keys())
-            results["ytdlp_auto_subs"] = list(info.get("automatic_captions", {}).keys())
-    except Exception as e:
-        results["ytdlp_error"] = str(e)
-
-    return jsonify(results)
-
 @app.route('/api/youtube-audio', methods=['GET'])
 def youtube_audio():
     """Stream audio of YouTube video directly to client for AI Speech-to-Text transcription."""
