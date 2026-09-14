@@ -192,7 +192,18 @@ def get_innertube_android_data(video_id):
             "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
             "Content-Type": "application/json"
         }
-        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+
+        cookie_file = get_youtube_cookiefile()
+        cookies_dict = {}
+        if cookie_file and os.path.exists(cookie_file):
+            try:
+                cj = http.cookiejar.MozillaCookieJar(cookie_file)
+                cj.load(ignore_discard=True, ignore_expires=True)
+                cookies_dict = {c.name: c.value for c in cj}
+            except Exception:
+                pass
+
+        resp = requests.post(url, json=payload, headers=headers, cookies=cookies_dict, timeout=10)
         if resp.status_code != 200:
             return None, f"HTTP {resp.status_code}"
         
