@@ -1941,3 +1941,404 @@ body.light-theme .unit-content strong {
         padding: 1.75rem;
     }
 }
+
+/* ==========================================================================
+   GOOGLE DIRECT CONNECTION STYLES
+   ========================================================================== */
+.btn-google-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-subtle);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition-fast);
+}
+
+.btn-google-nav:hover {
+    border-color: #4285F4;
+    box-shadow: 0 0 14px rgba(66, 133, 244, 0.25);
+}
+
+.google-color-icon {
+    color: #4285F4;
+    font-size: 1rem;
+}
+
+.google-connect-banner {
+    background: linear-gradient(135deg, rgba(66, 133, 244, 0.12) 0%, rgba(52, 168, 83, 0.08) 100%);
+    border: 1px solid rgba(66, 133, 244, 0.3);
+    border-radius: var(--radius-md);
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+}
+
+.google-banner-text h4 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #4285F4;
+    margin-bottom: 0.35rem;
+}
+
+.google-banner-text p {
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+.btn-google-direct {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.65rem;
+    background: #4285F4;
+    color: #ffffff !important;
+    padding: 0.75rem 1.2rem;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    font-size: 0.92rem;
+    text-decoration: none;
+    transition: var(--transition-fast);
+}
+
+.btn-google-direct:hover {
+    background: #3367d6;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(66, 133, 244, 0.4);
+}
+
+.field-hint {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 0.45rem;
+    line-height: 1.4;
+}
+
+/* ==========================================================================
+   HIGHLIGHTER MARKERS (ESTILO RESALTADOR PASTEL)
+   ========================================================================== */
+mark.hl-yellow, .hl-yellow {
+    background: linear-gradient(104deg, rgba(254, 240, 138, 0.9) 0%, rgba(253, 224, 71, 0.92) 100%);
+    color: #1e293b !important;
+    padding: 0.12rem 0.38rem;
+    border-radius: 4px;
+    font-weight: 600;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+
+mark.hl-orange, .hl-orange {
+    background: linear-gradient(104deg, rgba(254, 215, 170, 0.9) 0%, rgba(251, 146, 60, 0.88) 100%);
+    color: #1e293b !important;
+    padding: 0.12rem 0.38rem;
+    border-radius: 4px;
+    font-weight: 600;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+
+mark.hl-cyan, .hl-cyan {
+    background: linear-gradient(104deg, rgba(165, 243, 252, 0.9) 0%, rgba(103, 232, 249, 0.88) 100%);
+    color: #0f172a !important;
+    padding: 0.12rem 0.38rem;
+    border-radius: 4px;
+    font-weight: 600;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+
+mark.hl-green, .hl-green {
+    background: linear-gradient(104deg, rgba(187, 247, 208, 0.9) 0%, rgba(134, 239, 172, 0.88) 100%);
+    color: #064e3b !important;
+    padding: 0.12rem 0.38rem;
+    border-radius: 4px;
+    font-weight: 600;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+
+/* ==========================================================================
+   CALLOUTS & NOTAS AL MARGEN (ESTILO APUNTES DE ESTUDIO / POST-IT)
+   ========================================================================== */
+.unit-callouts-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+    gap: 1.25rem;
+    margin-top: 1.25rem;
+    margin-bottom: 1.25rem;
+}
+
+.study-callout-card {
+    position: relative;
+    border-radius: var(--radius-md);
+    padding: 1.25rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.study-callout-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.callout-header {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    margin-bottom: 0.65rem;
+    font-weight: 700;
+    font-size: 0.98rem;
+}
+
+.callout-header i {
+    font-size: 1.15rem;
+}
+
+.callout-pin {
+    position: absolute;
+    top: -9px;
+    right: 16px;
+    font-size: 1.1rem;
+    transform: rotate(18deg);
+    opacity: 0.9;
+}
+
+.callout-body {
+    font-size: 0.95rem;
+    line-height: 1.55;
+}
+
+.callout-body p {
+    margin-bottom: 0.5rem;
+}
+
+.callout-body p:last-child {
+    margin-bottom: 0;
+}
+
+.callout-body ul {
+    margin: 0.35rem 0 0.35rem 1.2rem;
+    padding: 0;
+}
+
+.callout-body li {
+    margin-bottom: 0.25rem;
+}
+
+/* 1. Idea clave para entender (Yellow Post-it with handwritten look) */
+.callout-idea-clave {
+    background: #fef9c3;
+    border: 1px solid #fde047;
+    color: #713f12;
+}
+
+.callout-idea-clave .callout-header {
+    color: #854d0e;
+    font-family: var(--font-heading);
+}
+
+.callout-idea-clave .callout-body {
+    font-family: 'Patrick Hand', 'Caveat', cursive, sans-serif;
+    font-size: 1.15rem;
+    color: #422006;
+    line-height: 1.45;
+}
+
+/* 2. Preguntas de Final / Examen (Mint / Gold with target badge) */
+.callout-pregunta-examen {
+    background: linear-gradient(135deg, rgba(238, 242, 255, 0.95) 0%, rgba(224, 231, 255, 0.9) 100%);
+    border: 1px solid #818cf8;
+    color: #1e1b4b;
+}
+
+.callout-pregunta-examen .callout-header {
+    color: #4338ca;
+}
+
+.callout-pregunta-examen .callout-body {
+    color: #312e81;
+}
+
+/* 3. ¿Por qué ocurre esto? / Intuición física (Cyan Post-it) */
+.callout-porque {
+    background: #ecfeff;
+    border: 1px solid #67e8f9;
+    color: #083344;
+}
+
+.callout-porque .callout-header {
+    color: #0e7490;
+}
+
+.callout-porque .callout-body {
+    color: #155e75;
+}
+
+/* 4. Observación / Cuidado de diseño (Warm Amber) */
+.callout-observacion {
+    background: #fffbeb;
+    border: 1px dashed #f59e0b;
+    color: #78350f;
+}
+
+.callout-observacion .callout-header {
+    color: #b45309;
+}
+
+.callout-observacion .callout-body {
+    color: #78350f;
+}
+
+/* 5. Tip / Ayuda al margen (Post-it note) */
+.callout-tip {
+    background: #fefce8;
+    border: 1px solid #facc15;
+    color: #713f12;
+}
+
+.callout-tip .callout-header {
+    color: #a16207;
+}
+
+.callout-tip .callout-body {
+    font-family: 'Patrick Hand', 'Caveat', cursive, sans-serif;
+    font-size: 1.15rem;
+    color: #5b3105;
+}
+
+/* 6. Regla Rápida (Emerald) */
+.callout-regla-rapida {
+    background: #f0fdf4;
+    border: 1px solid #4ade80;
+    color: #064e3b;
+}
+
+.callout-regla-rapida .callout-header {
+    color: #047857;
+}
+
+.callout-regla-rapida .callout-body {
+    color: #064e3b;
+}
+
+/* Dark mode adjustments for callouts */
+body:not(.light-theme) .callout-idea-clave {
+    background: #2a2717;
+    border-color: #854d0e;
+    color: #fef08a;
+}
+body:not(.light-theme) .callout-idea-clave .callout-header {
+    color: #facc15;
+}
+body:not(.light-theme) .callout-idea-clave .callout-body {
+    color: #fef9c3;
+}
+
+body:not(.light-theme) .callout-pregunta-examen {
+    background: #1e1e38;
+    border-color: #6366f1;
+    color: #e0e7ff;
+}
+body:not(.light-theme) .callout-pregunta-examen .callout-header {
+    color: #a5b4fc;
+}
+body:not(.light-theme) .callout-pregunta-examen .callout-body {
+    color: #c7d2fe;
+}
+
+body:not(.light-theme) .callout-porque {
+    background: #132832;
+    border-color: #0891b2;
+    color: #cffafe;
+}
+body:not(.light-theme) .callout-porque .callout-header {
+    color: #67e8f9;
+}
+body:not(.light-theme) .callout-porque .callout-body {
+    color: #a5f3fc;
+}
+
+body:not(.light-theme) .callout-observacion {
+    background: #281d11;
+    border-color: #d97706;
+    color: #fef3c7;
+}
+body:not(.light-theme) .callout-observacion .callout-header {
+    color: #fbbf24;
+}
+body:not(.light-theme) .callout-observacion .callout-body {
+    color: #fde68a;
+}
+
+body:not(.light-theme) .callout-tip {
+    background: #242214;
+    border-color: #ca8a04;
+    color: #fef08a;
+}
+body:not(.light-theme) .callout-tip .callout-header {
+    color: #facc15;
+}
+body:not(.light-theme) .callout-tip .callout-body {
+    color: #fef9c3;
+}
+
+body:not(.light-theme) .callout-regla-rapida {
+    background: #132a1e;
+    border-color: #16a34a;
+    color: #bbf7d0;
+}
+body:not(.light-theme) .callout-regla-rapida .callout-header {
+    color: #4ade80;
+}
+body:not(.light-theme) .callout-regla-rapida .callout-body {
+    color: #86efac;
+}
+
+/* ==========================================================================
+   FORMULA BREAKDOWN ("donde:")
+   ========================================================================== */
+.formula-variables-box {
+    margin-top: 0.85rem;
+    padding: 0.75rem 1rem;
+    background: rgba(0, 0, 0, 0.22);
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--accent-cyan);
+}
+
+body.light-theme .formula-variables-box {
+    background: #f1f5f9;
+    border-left: 3px solid #0284c7;
+}
+
+.where-title {
+    font-size: 0.84rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--accent-cyan);
+    margin-bottom: 0.4rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+body.light-theme .where-title {
+    color: #0369a1;
+}
+
+.where-list {
+    margin: 0;
+    padding-left: 1.2rem;
+    font-size: 0.9rem;
+    line-height: 1.55;
+}
+
+.where-list li {
+    margin-bottom: 0.25rem;
+}

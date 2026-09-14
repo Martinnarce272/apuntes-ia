@@ -174,6 +174,12 @@ def handle_gemini_error(exc):
         }), 400
 
     safe_msg = str(exc)
+    if "503" in safe_msg or "unavailable" in safe_msg.lower() or "high demand" in safe_msg.lower():
+        return jsonify({
+            "success": False,
+            "error": "Los servidores de Google Gemini están experimentando alta demanda temporal en procesamiento de video. Por favor espera 30 segundos y vuelve a intentar."
+        }), 503
+
     try:
         print(f"Error calling Gemini API: {safe_msg}")
     except Exception:
@@ -548,203 +554,254 @@ def extract_pdf_text(filepath):
         }
 
 SYSTEM_INSTRUCTION = """
-Eres un pedagogo experto y creador de apuntes de estudio universitarios de máxima calidad técnica y didáctica.
-Tu misión es transformar el material fuente proporcionado (video de YouTube, documento PDF o ambos) en un **Apunte de Estudio Maestro** claro, profundo, estructurado y enfocado directamente en el contenido.
+Eres un docente universitario y pedagogo de élite especializado en confeccionar apuntes de cátedra ilustrados, profundos y claros.
+Tu misión es transformar el material fuente proporcionado (video de YouTube, documento PDF o ambos) en un **Apunte de Estudio Maestro** con formato de cuaderno universitario de excelencia, idéntico a los mejores apuntes de estudio con notas al margen, preguntas de examen, ideas clave y fórmulas desglosadas.
 
-REQUISITOS FUNDAMENTALES:
-1. Concéntrate EXCLUSIVAMENTE en generar el APUNTE y sus desarrollos temáticos. NO generes flashcards, quizzes, preguntas de prueba ni glosarios secundarios. Todo el esfuerzo y tokens deben estar en las explicaciones, demostraciones y fórmulas del apunte.
-2. FÓRMULAS Y RECORTES VISUALES DEL VIDEO:
-   - Si el material proviene de videos de YouTube, identifica las fórmulas matemáticas, físicas o químicas, deducciones y esquemas que el docente explica o muestra en la pizarra o pantalla.
-   - Transcribe con exactitud las fórmulas utilizadas en el video usando formato LaTeX ($...$ para fórmulas en línea o $$...$$ para bloques de ecuaciones).
-   - Para cada fórmula o concepto visual clave del video, asigna la marca de tiempo exacta del video (en segundos 'timestamp_seconds' y formateada 'timestamp_display' ej. "04:15") y una descripción breve de lo que se observa en la pizarra/pantalla ('description'), para que el estudiante pueda ver el recorte / momento visual exacto del video.
+ESTRUCTURA Y ESTILO PEDAGÓGICO OBLIGATORIO:
+1. TITULACIÓN DE UNIDADES POR PREGUNTAS Y PASOS NUMERADOS:
+   - Formula los títulos de cada sección en 'developments' como preguntas directas o pasos estructurados numerados, por ejemplo:
+     - "1) ¿Qué es [Concepto]?"
+     - "2) Tipos y Clasificación de [Concepto]:"
+     - "3) ¿Ventajas y Desventajas de [Concepto]?"
+     - "4) ¿Cómo es su comportamiento a diferencia de [Alternativa]?"
+     - "5) Criterio de Diseño y Fórmulas de Cálculo:"
+     - "6) Verificaciones Críticas y Modos de Falla:"
 
-Debes responder ÚNICAMENTE con un objeto JSON válido (sin bloques de código markdown fuera del JSON, solo el JSON puro) con la siguiente estructura:
+2. RESALTADO DE CONCEPTOS CLAVE (ESTILO MARCADOR PASTEL):
+   - En el texto de 'content_markdown', resalta las palabras, reglas y definiciones más críticas usando la sintaxis ==término resaltado== (por ejemplo: ==la losa transmite las cargas directamente a las columnas==, ==falla por punzonado==, ==ábaco y capitel==).
+
+3. FÓRMULAS CON DESGLOSE COMPLETO DE VARIABLES ("donde:"):
+   - Toda expresión matemática, física o técnica debe ir en LaTeX ($...$ o $$...$$).
+   - En cada fórmula, incluye obligatoriamente 'where_variables': un array con la definición de CADA una de las variables que intervienen (ejemplo: ["$q_u$: Carga uniformemente distribuida mayorada", "$l_n$: Luz libre entre apoyos", "$l_2$: Ancho tributario del panel"]).
+
+4. NOTAS AL MARGEN Y POST-ITS PEDAGÓGICOS ('callouts'):
+   - Para cada unidad en 'developments', genera entre 1 y 3 callouts / post-its de estudio esenciales eligiendo entre estos tipos:
+     * "idea_clave": La intuición física o conceptual profunda para entender el tema sin memorizar de memoria (ej. por qué una etapa constructiva es más exigida que el edificio terminado).
+     * "pregunta_examen": Las preguntas típicas capciosas que toman los profesores en mesas de examen o finales, junto con la respuesta concisa y contundente.
+     * "porque": Explicación de la causa subyacente (ej. "¿Por qué ocurre el punzonado?" o "¿Qué tiene que ver la masa con las fuerzas sísmicas?").
+     * "observacion": Advertencias de cálculo, consideraciones de normativa reglamentaria o trampas donde los estudiantes suelen equivocarse.
+     * "tip": Aclaraciones prácticas directas y ayudas al margen.
+     * "regla_rapida": Reglas nemotécnicas o síntesis en 2 renglones (ej. "1. Solo Vu -> corte centrado. 2. Vu + Mu -> corte excéntrico.").
+
+5. PROHIBIDO GENERAR FLASHCARDS O QUIZZES:
+   - Concentra el 100% de la capacidad de síntesis en el Apunte Maestro y sus notas al margen.
+
+Devuelve EXCLUSIVAMENTE un objeto JSON válido con la siguiente estructura:
 
 {
   "title": "Título Claro y Profesional del Tema Principal",
   "topic_overview": "Breve sinopsis (2-3 oraciones) de lo que abarca este apunte",
-  "estimated_study_time": "ej. 20 min",
+  "estimated_study_time": "ej. 30 min",
   "key_takeaways": [
     {
       "type": "critical" | "rule" | "warning" | "tip",
       "title": "Título de la idea clave o regla de oro",
-      "description": "Explicación concisa y contundente del concepto clave que no puede olvidarse."
+      "description": "Explicación concisa y contundente del concepto clave."
     }
   ],
   "general_diagram": {
     "title": "Mapa Conceptual o Flujo Global del Tema",
-    "mermaid_code": "Código Mermaid.js completo y sintácticamente válido (ej: graph TD\\n    A[Concepto Central] --> B[Rama 1]\\n    ...)"
+    "mermaid_code": "Código Mermaid.js sintácticamente válido (ej: graph TD\\n    A[...] --> B[...])"
   },
   "developments": [
     {
       "unit_number": 1,
-      "title": "Título de la Sección / Unidad Temática",
-      "timestamp_display": "ej. 03:20",
+      "title": "1) ¿Qué es [Concepto]?",
+      "timestamp_display": "03:20",
       "timestamp_seconds": 200,
-      "content_markdown": "Desarrollo profundo y exhaustivo de esta sección. Explica el qué, el porqué y el cómo paso a paso con rigor pedagógico. Usa subtítulos (###), listas ordenadas y ejemplos.",
+      "content_markdown": "Desarrollo con ==palabras resaltadas==, listas claras de ventajas/desventajas y explicaciones paso a paso.",
       "formulas": [
         {
-          "latex": "$$f(x) = \\int_a^b g(t) dt$$",
-          "explanation": "Significado de la ecuación y variables",
-          "timestamp_display": "03:45",
-          "timestamp_seconds": 225
+          "latex": "$$M_0 = \\frac{q_u \\cdot l_n^2 \\cdot l_2}{8}$$",
+          "where_variables": [
+            "$q_u$: Carga uniformemente distribuida mayorada [kN/m²]",
+            "$l_n$: Luz libre entre caras de columnas",
+            "$l_2$: Ancho tributario del panel perpendicular al análisis"
+          ],
+          "explanation": "Momento isostático total de referencia para distribución longitudinal.",
+          "timestamp_display": "04:15",
+          "timestamp_seconds": 255
+        }
+      ],
+      "callouts": [
+        {
+          "type": "idea_clave",
+          "title": "Idea clave para entender",
+          "content": "Más carga por el hormigonado superior + menor resistencia por corta edad del hormigón -> la zona alrededor de la columna puede ser la más exigida de toda la vida útil."
+        },
+        {
+          "type": "pregunta_examen",
+          "title": "Pregunta típica de final",
+          "content": "¿Qué influencia tienen las vigas longitudinales entre apoyos en la distribución de momentos en el Método Directo?\n- Incrementan la rigidez de la franja de columna (representado por $\\alpha_1$). Si $\\alpha_1 l_2 / l_1 \\ge 1$, absorben cerca del 85% del momento."
         }
       ],
       "video_snapshot": {
         "has_visual": true,
         "timestamp_display": "03:20",
         "timestamp_seconds": 200,
-        "description": "Fórmula y gráfico dibujado en la pizarra durante la explicación"
+        "description": "Esquema y fórmula explicada en la pizarra"
       },
-      "mermaid_diagram": "Código Mermaid.js si esta sección se beneficia de un diagrama conceptual de flujo o estructura. Si no aplica, dejar string vacío \"\"."
+      "mermaid_diagram": ""
     }
   ]
 }
-
-REGLAS DE ORO:
-1. El contenido de 'developments' debe ser profundo, pedagógico y riguroso. Desarrolla los temas paso a paso.
-2. Si hay fórmulas matemáticas, físicas o químicas, exprésalas siempre en LaTeX ($...$ o $$...$$) y vinculalas al momento del video en que aparecen.
-3. Asegúrate de que los diagramas Mermaid tengan sintaxis perfectamente válida.
-4. NO generes flashcards ni quizzes.
-5. Devuelve EXCLUSIVAMENTE el JSON.
 """
 
 @app.route('/api/demo', methods=['GET'])
 def get_demo_notes():
     """Return a high-quality pre-generated study note for instant preview and testing."""
     sample = {
-        "title": "Arquitectura y Fundamentos de Redes Neuronales Artificiales",
-        "topic_overview": "Guía maestra que desglosa el funcionamiento matemático y estructural de los modelos de Deep Learning: desde el perceptrón simple hasta el algoritmo de Backpropagation y optimización con descenso de gradiente.",
-        "estimated_study_time": "25 min",
+        "title": "Entrepisos Sin Vigas de Hormigón Armado (Cálculo y Diseño Estructural)",
+        "topic_overview": "Guía maestra de estudio de nivel universitario sobre los sistemas de losas y placas planas apoyadas directamente sobre columnas: tipologías (ábacos y capiteles), ventajas frente a entrepisos tradicionales, diseño a flexión por el Método Directo y verificación crítica al punzonado según reglamento.",
+        "estimated_study_time": "30 min",
         "sources": [
             {
                 "type": "youtube",
-                "title": "Clase Magistral: Deep Learning desde Cero",
+                "title": "Clase Magistral: Entrepisos Sin Vigas y Punzonado",
                 "thumbnail": "https://img.youtube.com/vi/aircAruvnKk/maxresdefault.jpg"
             },
             {
                 "type": "pdf",
-                "filename": "Capitulo4_Optimizacion_Gradiente.pdf",
-                "pages": 18
+                "filename": "Entrepisos_Sin_Vigas_CIRSOC.pdf",
+                "pages": 21
             }
         ],
         "key_takeaways": [
             {
                 "type": "critical",
-                "title": "El Problema del Gradiente Desvaneciente",
-                "description": "En redes profundas con funciones como Sigmoide, las derivadas menores a 1 se multiplican sucesivamente por la regla de la cadena, haciendo que los pesos de las primeras capas casi no se actualicen."
+                "title": "Falla por Punzonado: Abrupta y Frágil",
+                "description": "La reacción de la columna concentra altísimas tensiones de corte en un área reducida. Ocurre casi instantáneamente sin previo aviso y puede desatar un colapso en cadena."
             },
             {
                 "type": "rule",
-                "title": "Regla de Oro de Inicialización",
-                "description": "Nunca inicialices los pesos en cero: esto genera simetría en todas las neuronas de una capa oculta y aprenden exactamente la misma característica. Usa He o Xavier."
-            },
-            {
-                "type": "tip",
-                "title": "Elección de Función de Activación",
-                "description": "Usa ReLU o Leaky ReLU en capas intermedias por su eficiencia computacional y gradiente no saturante en positivos. Reserva Softmax únicamente para la capa de salida multiclase."
+                "title": "Franja de Columna vs. Franja Intermedia",
+                "description": "La franja de columna absorbe la mayor rigidez y la mayor parte de los momentos negativos sobre los apoyos. Las intermedias absorben los momentos positivos en el tramo."
             },
             {
                 "type": "warning",
-                "title": "Cuidado con el Sobreajuste (Overfitting)",
-                "description": "Si la pérdida de entrenamiento baja pero la de validación sube, aplica Dropout ($p \\in [0.2, 0.5]$) o regularización $L_2$ de inmediato."
+                "title": "Comportamiento en Zonas Sísmicas",
+                "description": "Al requerir mayor espesor de losa, el edificio gana más masa ($F = m \\cdot a$), lo que incrementa notablemente las fuerzas sísmicas de inercia."
+            },
+            {
+                "type": "tip",
+                "title": "Armadura Inferior Contra Colapso Progresivo",
+                "description": "Colocar armadura inferior pasante por la columna anclada adecuadamente mantiene suspendida la losa y previene la caída del entrepiso si el corte falla."
             }
         ],
         "developments": [
             {
                 "unit_number": 1,
-                "title": "El Perceptrón y la Neurona Artificial",
-                "content_markdown": "Una neurona artificial procesa un vector de entradas $\\mathbf{x} = [x_1, x_2, \\dots, x_n]^T$ ponderado por un vector de pesos $\\mathbf{w}$ y un sesgo o bias $b$.\n\n### 1.1 Combinación Lineal\nLa suma ponderada se expresa algebraicamente como:\n$$z = \\sum_{i=1}^{n} w_i x_i + b = \\mathbf{w}^T \\mathbf{x} + b$$\n\n### 1.2 Aplicación de la Función No Lineal\nPara que la red sea capaz de aproximar relaciones no lineales (Teorema de Aproximación Universal), aplicamos una función de activación $\\sigma(z)$:\n$$a = \\sigma(z) = \\frac{1}{1 + e^{-z}}$$\n\nSi no tuviéramos activaciones no lineales, una red de 100 capas colapsaría matemáticamente en una simple transformación afín de una sola capa.",
-                "visual_description": "Esquema vectorial que muestra flechas de entrada convergiendo en un nodo sumador Σ, seguido por el bloque de activación σ(z) que produce la salida escalar.",
-                "mermaid_diagram": "graph LR\n    X1[x1 Entrante] -->|w1| SUM[Suma Ponderada Σ + b]\n    X2[x2 Entrante] -->|w2| SUM\n    X3[x3 Entrante] -->|w3| SUM\n    SUM --> ACT[Función σ: ReLU / Sigmoide]\n    ACT --> Y[Salida Activada a]"
+                "title": "1) ¿Qué es un entrepiso sin vigas y cuáles son sus tipos?",
+                "content_markdown": "Es un sistema estructural en el que ==la losa transmite las cargas directamente a las columnas==, sin la intermediación de vigas tradicionales.\n\n### Tipos Principales:\n- **Placa Plana:** Losa con ==espesor constante== en toda su superficie. Requiere especial atención al punzonado en el encuentro losa-columna y a las deformaciones por flexión.\n- **Losa Plana (con Capitel y Ábaco):**\n  - ==Capitel:== Ensanche en la parte superior de la columna que aumenta la superficie de transferencia de carga y reduce tensiones tangenciales.\n  - ==Ábaco:== Sobre-espesor local de la losa en la vecindad de la columna que incrementa la rigidez local y la resistencia a flexión y punzonado.",
+                "callouts": [
+                    {
+                        "type": "tip",
+                        "title": "Tip / Ayuda al margen",
+                        "content": "Las vigas que a veces se colocan entre columnas son **vigas muy finitas** que sirven solo para refuerzo o borde, de muy poca altura."
+                    },
+                    {
+                        "type": "porque",
+                        "title": "¿Por qué se colocan capiteles y ábacos?",
+                        "content": "Aparecen **tracciones arriba en dos direcciones** y flexiones grandes en el encuentro columna-losa, originando tensiones tangenciales de corte (punzonado). El sobre-espesor reduce drásticamente estas tensiones críticas."
+                    }
+                ],
+                "formulas": [],
+                "mermaid_diagram": "graph TD\n    ESV[Entrepisos Sin Vigas] --> PP[Placa Plana: Espesor Constante]\n    ESV --> LP[Losa Plana con Refuerzos]\n    LP --> C[Capitel: Ensanche de Columna]\n    LP --> A[Ábaco: Sobre-espesor de Losa]"
             },
             {
                 "unit_number": 2,
-                "title": "Backpropagation y Regla de la Cadena",
-                "content_markdown": "El aprendizaje consiste en minimizar la función de costo $J(W, b)$ utilizando el Descenso de Gradiente estocástico.\n\n### 2.1 Cálculo del Gradiente\nPara actualizar cualquier peso $w_{ij}^{(l)}$ en la capa $l$, calculamos la derivada parcial mediante la regla de la cadena del cálculo multivariable:\n$$\\frac{\\partial J}{\\partial w_{ij}^{(l)}} = \\frac{\\partial J}{\\partial a^{(l)}} \\cdot \\frac{\\partial a^{(l)}}{\\partial z^{(l)}} \\cdot \\frac{\\partial z^{(l)}}{\\partial w_{ij}^{(l)}}$$\n\n### 2.2 Regla de Actualización de Pesos\nCon una tasa de aprendizaje $\\alpha$:\n$$w_{ij}^{(l)} \\leftarrow w_{ij}^{(l)} - \\alpha \\frac{\\partial J}{\\partial w_{ij}^{(l)}}$$",
-                "visual_description": "Diagrama de propagación hacia adelante (Forward Pass en verde) y flujo de retropropagación del gradiente (Backward Pass en rojo) a través de las capas de la red.",
-                "mermaid_diagram": "graph LR\n    Entrada[Datos de Entrada] -->|Forward Pass| Oculta[Capas Ocultas]\n    Oculta -->|Forward Pass| Salida[Predicción]\n    Salida -->|Función de Pérdida| Loss[Cálculo del Error J]\n    Loss -.->|Backpropagation: Regla de la Cadena| Oculta\n    Oculta -.->|Actualización de Pesos Δw| Entrada"
+                "title": "2) ¿Ventajas y Desventajas de los Entrepisos Sin Vigas?",
+                "content_markdown": "### Ventajas Principales:\n1. **Mayor altura útil del edificio:** Al no haber vigas descolgadas, a igualdad de altura total se pueden albergar más pisos o ganar espacio libre utilizable.\n2. **Mayor rapidez y economía de encofrado:** Fondos de encofrado completamente planos y sencillos de armar y desencofrar.\n3. **Flexibilidad de instalaciones:** Facilita el tendido directo de ductos de aire acondicionado, electricidad y cañerías sin interferencias de vigas.\n4. **Mejor iluminación y condiciones sanitarias:** Menos recovecos donde se acumule polvo y mejor reflexión de luz natural.\n\n### Desventajas Críticas:\n1. **Alto consumo de acero y hormigón:** Al disminuir el brazo de palanca interno, se incrementan las cuantías de armadura y el espesor de losa.\n2. **Mayor peso propio y sensibilidad sísmica:** El aumento de masa genera mayores fuerzas de inercia ($F = m \\cdot a$) durante terremotos.\n3. **Deformabilidad:** Presenta menor rigidez frente a acciones horizontales (viento/sismo) que un sistema aporticado con vigas.",
+                "callouts": [
+                    {
+                        "type": "idea_clave",
+                        "title": "Idea clave para entender",
+                        "content": "En la etapa de construcción, **los puntales transmiten la carga del hormigonado fresco superior a las losas inferiores jóvenes**. Como el hormigón inferior aún no alcanzó su resistencia de diseño, esta etapa puede ser la más exigida de toda la vida útil de la estructura."
+                    },
+                    {
+                        "type": "observacion",
+                        "title": "¿Qué pasa en zonas sísmicas?",
+                        "content": "Durante un sismo, el edificio desarrolla fuerzas de inercia proporcionales a su masa: **$F = m \\cdot a$**. Reducir el peso propio es el objetivo primordial de la ingeniería sísmica."
+                    }
+                ],
+                "formulas": [
+                    {
+                        "latex": "$$F = m \\cdot a$$",
+                        "where_variables": [
+                            "$F$: Fuerza de inercia sísmica generada [N]",
+                            "$m$: Masa total del edificio [kg]",
+                            "$a$: Aceleración sísmica del terreno [m/s²]"
+                        ],
+                        "explanation": "Expresión fundamental de inercia: a mayor masa, mayores esfuerzos sobre columnas y fundaciones."
+                    }
+                ],
+                "mermaid_diagram": ""
+            },
+            {
+                "unit_number": 3,
+                "title": "3) Diseño a Flexión: Método de Diseño Directo (MDD)",
+                "content_markdown": "El Método de Diseño Directo es un procedimiento semiempírico para distribuir el momento flector total en paneles de losas regulares.\n\n### Pasos del Método:\n1. Calcular el ==Momento Isostático Total ($M_0$)== para cargas mayoradas en la dirección de análisis.\n2. Distribuir longitudinalmente $M_0$ entre momentos negativos (sobre columnas/apoyos) y momentos positivos (en el centro del tramo).\n3. Distribuir transversalmente dichos momentos entre la ==franja de columna== (mayor rigidez) y la ==franja intermedia==.",
+                "callouts": [
+                    {
+                        "type": "pregunta_examen",
+                        "title": "Pregunta de final / examen",
+                        "content": "¿Qué influencia tienen las vigas longitudinales entre apoyos en la distribución de momentos en el Método Directo?\n- Incrementan la rigidez relativa $\\alpha_1 = \\frac{E_{cb} I_b}{E_{cs} I_s}$. Cuando $\\alpha_1 \\frac{l_2}{l_1} \\ge 1.0$, la viga absorbe aproximadamente el **85% del momento** asignado a la franja de columna."
+                    },
+                    {
+                        "type": "observacion",
+                        "title": "Observación para el cálculo",
+                        "content": "Para aplicar el Método Directo se utilizan las **secciones brutas de hormigón** sin considerar la armadura ni la fisuración previa."
+                    }
+                ],
+                "formulas": [
+                    {
+                        "latex": "$$M_0 = \\frac{q_u \\cdot l_n^2 \\cdot l_2}{8}$$",
+                        "where_variables": [
+                            "$q_u$: Carga uniformemente distribuida mayorada [kN/m²]",
+                            "$l_n$: Luz libre entre caras de columnas o capiteles ($\\ge 0.65 l_1$) [m]",
+                            "$l_2$: Ancho tributario del panel perpendicular a la dirección analizada [m]"
+                        ],
+                        "explanation": "Momento flector isostático total de referencia equivalente a una viga simplemente apoyada."
+                    }
+                ],
+                "mermaid_diagram": ""
+            },
+            {
+                "unit_number": 4,
+                "title": "4) Diseño a Corte y Falla por Punzonado (Corte Bidireccional)",
+                "content_markdown": "En entrepisos sin vigas deben verificarse dos mecanismos de falla por corte:\n1. **Corte por acción de viga (unidireccional):** La sección crítica se ubica a una distancia $d$ de la cara de la columna.\n2. **Corte por punzonado (bidireccional):** La sección crítica corresponde a un ==perímetro cerrado ($b_0$) ubicado a una distancia $d/2$== del contorno de la columna.\n\n### Transferencia de Momentos Desbalanceados:\nCuando la columna recibe corte vertical $V_u$ y momento flector desbalanceado $M_u$, la transmisión ocurre por dos mecanismos simultáneos:\n- **Por flexión:** Una fracción $M_{ub} = \\gamma_f M_u$ es absorbida por la armadura de flexión.\n- **Por excentricidad de corte:** La fracción restante $M_{uv} = (1 - \\gamma_f) M_u$ distorsiona las tensiones de corte en el perímetro crítico.",
+                "callouts": [
+                    {
+                        "type": "regla_rapida",
+                        "title": "Regla rápida para recordar",
+                        "content": "1. **Solo $V_u$:** Tensiones de corte uniformes -> punzonado centrado.\n2. **$V_u + M_u$:** Tensiones de corte desiguales -> punzonado excéntrico (el lado donde se suma el momento gobierna el dimensionamiento)."
+                    },
+                    {
+                        "type": "porque",
+                        "title": "¿Por qué la falla por punzonado es tan peligrosa?",
+                        "content": "Es **abrupta y frágil**: el hormigón se rompe casi instantáneamente sin presentar grandes fisuras o deformaciones previas que alerten del colapso inminente."
+                    }
+                ],
+                "formulas": [
+                    {
+                        "latex": "$$\\phi V_c \\ge V_u$$",
+                        "where_variables": [
+                            "$\\phi$: Factor de reducción de resistencia para corte ($0.75$)",
+                            "$V_c$: Resistencia nominal al corte aportada por el hormigón [kN]",
+                            "$V_u$: Esfuerzo de corte mayorado actuante en la sección crítica [kN]"
+                        ],
+                        "explanation": "Condición reglamentaria indispensable de seguridad estructural frente al punzonado."
+                    }
+                ],
+                "mermaid_diagram": "graph TD\n    V[Corte en Entrepisos Sin Vigas] --> V1[Corte Unidireccional: Sección a distancia d]\n    V --> V2[Punzonado Bidireccional: Perímetro cerrado a d/2]\n    V2 --> Centrado[Centrado: Solo Vu]\n    V2 --> Excentrico[Excéntrico: Vu + Momento Desbalanceado Mu]"
             }
         ],
         "general_diagram": {
-            "title": "Pipeline Completo de Aprendizaje Profundo",
-            "mermaid_code": "graph TD\n    A[Datos Crudos: YouTube / PDF] --> B[Preprocesamiento & Extracción]\n    B --> C[Forward Pass: Combinación Lineal + Activación]\n    C --> D[Cálculo de Función de Costo J]\n    D --> E{¿Error < Umbral?}\n    E -- No --> F[Backward Pass: Cálculo de Gradientes]\n    F --> G[Optimizador Adam / SGD: Ajuste de Pesos]\n    G --> C\n    E -- Sí --> H[Modelo Convergente y Listo]"
+            "title": "Flujo de Diseño y Comportamiento de Entrepisos Sin Vigas",
+            "mermaid_code": "graph TD\n    A[Geometría y Cargas del Entrepiso] --> B{¿Cumple Condiciones del Método Directo?}\n    B -- Sí --> C[Método de Diseño Directo: Cálculo de Mo]\n    B -- No --> D[Método del Pórtico Equivalente / MEF]\n    C --> E[Distribución Longitudinal: Negativos y Positivos]\n    E --> F[Distribución Transversal: Franja de Columna e Intermedia]\n    F --> G[Dimensionamiento a Flexión]\n    G --> H[Verificación Crítica de Punzonado en Columnas: d/2]\n    H --> I{¿Verifica phi Vc >= Vu?}\n    I -- Sí --> J[Estructura Conforme y Segura]\n    I -- No --> K[Colocar Ábacos/Capiteles, Aumentar Espesor o Armadura de Corte]"
         },
-        "flashcards": [
-            {
-                "topic": "Arquitectura",
-                "question": "¿Por qué es indispensable incluir funciones de activación no lineales entre capas?",
-                "answer": "Porque sin no-linealidades, la composición de múltiples capas lineales es matemáticamente equivalente a una sola capa lineal, perdiendo la capacidad de modelar patrones complejos."
-            },
-            {
-                "topic": "Optimización",
-                "question": "¿Qué representa la tasa de aprendizaje (learning rate $\\alpha$)?",
-                "answer": "Determina el tamaño del paso que dan los pesos en dirección opuesta al gradiente en cada iteración. Si es muy grande diverge; si es muy pequeña tarda demasiado en converger."
-            },
-            {
-                "topic": "Activaciones",
-                "question": "¿Cuál es la principal ventaja de ReLU frente a Sigmoide en capas ocultas?",
-                "answer": "ReLU no satura para valores positivos (su derivada es 1), evitando el desvanecimiento del gradiente y siendo mucho más rápida de calcular."
-            },
-            {
-                "topic": "Regularización",
-                "question": "¿Cómo funciona la técnica de Dropout durante el entrenamiento?",
-                "answer": "Desactiva aleatoriamente una fracción de neuronas en cada pasada de entrenamiento, obligando a la red a no depender de ninguna neurona específica y reduciendo el sobreajuste."
-            }
-        ],
-        "quiz": [
-            {
-                "question": "Si inicializamos todos los pesos de una red neuronal multicapa con el valor exacto de cero, ¿qué ocurre?",
-                "options": [
-                    "La red aprende mucho más rápido porque parte del punto neutro.",
-                    "Todas las neuronas de una misma capa reciben el mismo gradiente y aprenden idénticos pesos (problema de simetría).",
-                    "El gradiente se vuelve infinito en la primera pasada.",
-                    "La red funciona normalmente siempre que el bias sea distinto de cero."
-                ],
-                "correct_index": 1,
-                "explanation": "Al tener pesos idénticos, la derivada de la pérdida respecto a cada peso es idéntica en toda la capa, lo que impide que las neuronas se especialicen en diferentes características."
-            },
-            {
-                "question": "¿Qué fórmula representa la función de activación ReLU?",
-                "options": [
-                    "f(x) = 1 / (1 + e^(-x))",
-                    "f(x) = max(0, x)",
-                    "f(x) = tanh(x)",
-                    "f(x) = e^x / Σ e^(x_j)"
-                ],
-                "correct_index": 1,
-                "explanation": "ReLU (Rectified Linear Unit) devuelve 0 cuando x < 0 y devuelve x cuando x ≥ 0, representada como max(0, x)."
-            },
-            {
-                "question": "¿Cuál es la principal causa del desvanecimiento del gradiente (vanishing gradient)?",
-                "options": [
-                    "Tasas de aprendizaje demasiado altas que superan el óptimo.",
-                    "Multiplicación sucesiva de derivadas menores a 1 al aplicar la regla de la cadena hacia atrás.",
-                    "Utilizar conjuntos de datos con muy pocas muestras.",
-                    "Usar la función Softmax en la capa de salida."
-                ],
-                "correct_index": 1,
-                "explanation": "Al retropropagar el error a través de muchas capas con funciones de activación cuyas derivadas tienen un máximo pequeño (ej. 0.25 para sigmoide), el producto de derivadas decrece exponencialmente hacia cero."
-            }
-        ],
-        "exam_tips": [
-            "Pregunta típica: Demostrar matemáticamente por qué dos capas lineales sucesivas W2(W1 * x + b1) + b2 equivalen a una sola capa W' * x + b'. Ten clara la propiedad distributiva matricial.",
-            "Ojo con confundir función de pérdida (Loss, evaluada en un único ejemplo) con función de costo (Cost, promedio de pérdidas en todo el lote o dataset)."
-        ],
-        "glossary": [
-            {
-                "term": "Backpropagation",
-                "definition": "Algoritmo basado en la regla de la cadena para calcular el gradiente de la función de costo respecto a cada peso de la red."
-            },
-            {
-                "term": "Época (Epoch)",
-                "definition": "Una pasada completa hacia adelante y hacia atrás de todo el conjunto de datos de entrenamiento a través de la red."
-            },
-            {
-                "term": "Hiperparámetro",
-                "definition": "Variable configurada por el usuario antes de entrenar (tasa de aprendizaje, número de capas, tamaño de lote), a diferencia de los pesos que los aprende la red."
-            }
-        ]
+        "flashcards": [],
+        "quiz": []
     }
     return jsonify({"success": True, "data": sample})
 
@@ -917,9 +974,11 @@ Extrae con máximo rigor pedagógico todo su contenido académico y formativo:
 Escribe un desarrollo analítico muy detallado, exhaustivo y estructurado cronológicamente con todo el contenido del video."""
 
                 print(f"[Proceso Secuencial] Analizando video #{idx+1} ('{v_meta['title']}') individualmente con Gemini (FPS={fps})...")
+                video_models = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.7-flash"]
                 video_summary, video_model = call_gemini_with_fallback(
                     client=client,
-                    contents=[video_part, extract_prompt]
+                    contents=[video_part, extract_prompt],
+                    models=video_models
                 )
 
                 # Liberar memoria del video inmediatamente

@@ -132,10 +132,10 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateKeyIndicator() {
         if (state.hasApiKey) {
             elements.keyIndicator.classList.add('active');
-            elements.keyStatusText.textContent = 'API Key Lista';
+            elements.keyStatusText.textContent = 'Conectado a Google';
         } else {
             elements.keyIndicator.classList.remove('active');
-            elements.keyStatusText.textContent = 'Configurar API Key';
+            elements.keyStatusText.textContent = 'Conectar a Google';
         }
     }
 
@@ -614,9 +614,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.developments && data.developments.length > 0) {
             elements.developmentsContainer.innerHTML = data.developments.map((dev, idx) => {
                 const unitNum = dev.unit_number || (idx + 1);
-                const markdownParsed = marked.parse(dev.content_markdown || '');
                 
-                // Formulas del Video
+                // Parse Markdown with support for ==highlighted text==
+                let rawMd = dev.content_markdown || '';
+                rawMd = rawMd.replace(/==([^=]+)==/g, '<mark class="hl-yellow">$1</mark>');
+                const markdownParsed = marked.parse(rawMd);
+                
+                // Formulas con desglose de variables ("donde:")
                 let formulasHtml = '';
                 if (dev.formulas && Array.isArray(dev.formulas) && dev.formulas.length > 0) {
                     formulasHtml = `
@@ -624,15 +628,72 @@ document.addEventListener('DOMContentLoaded', () => {
                             ${dev.formulas.map(f => {
                                 const latexCode = f.latex || '';
                                 const timeLabel = f.timestamp_display ? `[${escapeHtml(f.timestamp_display)}]` : '';
+                                let whereHtml = '';
+                                if (f.where_variables && Array.isArray(f.where_variables) && f.where_variables.length > 0) {
+                                    whereHtml = `
+                                        <div class="formula-variables-box">
+                                            <div class="where-title"><i class="fa-solid fa-list-check"></i> Donde cada término representa:</div>
+                                            <ul class="where-list">
+                                                ${f.where_variables.map(w => `<li>${marked.parseInline(w)}</li>`).join('')}
+                                            </ul>
+                                        </div>
+                                    `;
+                                }
                                 return `
                                     <div class="video-formula-box">
                                         <div class="formula-top-bar">
-                                            <span class="formula-badge"><i class="fa-solid fa-square-root-variable"></i> Fórmula del Video ${timeLabel}</span>
+                                            <span class="formula-badge"><i class="fa-solid fa-square-root-variable"></i> Fórmula ${timeLabel}</span>
                                         </div>
                                         <div class="formula-content math-renderable">
                                             ${latexCode.startsWith('$') ? latexCode : `$$${latexCode}$$`}
                                         </div>
                                         ${f.explanation ? `<p class="formula-explanation">${escapeHtml(f.explanation)}</p>` : ''}
+                                        ${whereHtml}
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    `;
+                }
+
+                // Callouts & Notas al margen (Estilo Apuntes de Estudio / Post-it)
+                let calloutsHtml = '';
+                if (dev.callouts && Array.isArray(dev.callouts) && dev.callouts.length > 0) {
+                    const calloutIcons = {
+                        idea_clave: '<i class="fa-solid fa-lightbulb" style="color:#eab308"></i>',
+                        pregunta_examen: '<i class="fa-solid fa-graduation-cap" style="color:#6366f1"></i>',
+                        porque: '<i class="fa-solid fa-circle-question" style="color:#06b6d4"></i>',
+                        observacion: '<i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b"></i>',
+                        tip: '<i class="fa-solid fa-thumbtack" style="color:#eab308"></i>',
+                        regla_rapida: '<i class="fa-solid fa-bolt" style="color:#10b981"></i>'
+                    };
+                    const calloutTitles = {
+                        idea_clave: 'Idea clave para entender',
+                        pregunta_examen: 'Preguntas de final / examen',
+                        porque: '¿Por qué ocurre esto?',
+                        observacion: 'Observación y trampa de cálculo',
+                        tip: 'Tip / Ayuda al margen',
+                        regla_rapida: 'Regla rápida para recordar'
+                    };
+
+                    calloutsHtml = `
+                        <div class="unit-callouts-container">
+                            ${dev.callouts.map(c => {
+                                const cType = c.type || 'tip';
+                                const icon = calloutIcons[cType] || calloutIcons.tip;
+                                const defTitle = calloutTitles[cType] || 'Nota importante';
+                                const title = c.title || defTitle;
+                                const bodyParsed = marked.parse(c.content || '');
+                                return `
+                                    <div class="study-callout-card callout-${cType}">
+                                        <div class="callout-pin"><i class="fa-solid fa-thumbtack"></i></div>
+                                        <div class="callout-header">
+                                            ${icon}
+                                            <span>${escapeHtml(title)}</span>
+                                        </div>
+                                        <div class="callout-body math-renderable">
+                                            ${bodyParsed}
+                                        </div>
                                     </div>
                                 `;
                             }).join('')}
@@ -700,6 +761,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             ${markdownParsed}
                         </div>
                         ${formulasHtml}
+                        ${calloutsHtml}
                         ${videoMomentHtml}
                         ${diagramHtml}
                         ${visualCardHtml}

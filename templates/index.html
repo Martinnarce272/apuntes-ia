@@ -8,7 +8,7 @@
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=Patrick+Hand&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     
     <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -25,7 +25,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=7.0">
+    <link rel="stylesheet" href="/static/css/style.css?v=8.0">
 </head>
 <body>
     <div class="app-container">
@@ -46,9 +46,9 @@
                     <i class="fa-solid fa-sparkles"></i>
                     <span>Ver Apunte de Ejemplo</span>
                 </button>
-                <button id="btn-api-key" class="btn-secondary nav-btn" title="Configurar clave Gemini">
-                    <i class="fa-solid fa-key"></i>
-                    <span id="key-status-text">Configurar API Key</span>
+                <button id="btn-api-key" class="btn-secondary nav-btn btn-google-nav" title="Conexión directa a Google Gemini">
+                    <i class="fa-brands fa-google google-color-icon"></i>
+                    <span id="key-status-text">Conectando a Google...</span>
                     <span id="key-indicator" class="status-dot"></span>
                 </button>
                 <button id="btn-theme-toggle" class="icon-btn" title="Cambiar tema">
@@ -297,41 +297,42 @@
             <div class="modal-box glass-card">
                 <div class="modal-header">
                     <div class="modal-title-wrap">
-                        <i class="fa-solid fa-key icon-accent"></i>
-                        <h3>Configuración de Gemini API Key</h3>
+                        <i class="fa-brands fa-google icon-accent google-color-icon"></i>
+                        <h3>Conexión con Google Gemini</h3>
                     </div>
                     <button id="btn-close-modal" class="icon-btn"><i class="fa-solid fa-xmark"></i></button>
                 </div>
 
                 <div class="modal-body">
-                    <p class="modal-text">Para sintetizar videos y documentos con la mayor precisión, ingresa tu clave gratuita de Google Gemini (Google AI Studio).</p>
+                    <div class="google-connect-banner">
+                        <div class="google-banner-text">
+                            <h4>Conectar con tu cuenta de Google</h4>
+                            <p>ApuntesIA se comunica de forma directa y oficial con los modelos de Google Gemini a través de tu clave gratuita de Google AI Studio.</p>
+                        </div>
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="btn-google-direct">
+                            <i class="fa-brands fa-google"></i>
+                            <span>Abrir Google AI Studio y Obtener Clave Gratis</span>
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                        </a>
+                    </div>
                     
                     <div class="input-field">
-                        <label for="input-api-key">Gemini API Key</label>
+                        <label for="input-api-key">Tu clave de Google Gemini (API Key)</label>
                         <div class="input-with-icon">
-                            <i class="fa-solid fa-lock"></i>
+                            <i class="fa-solid fa-key"></i>
                             <input type="password" id="input-api-key" placeholder="AIzaSy..." autocomplete="off">
                             <button type="button" id="btn-toggle-key-vis" class="icon-btn-inline" title="Mostrar/ocultar">
                                 <i class="fa-solid fa-eye"></i>
                             </button>
                         </div>
-                    </div>
-
-                    <div class="key-help-box">
-                        <i class="fa-solid fa-circle-info"></i>
-                        <div>
-                            <span>¿No tienes una clave todavía?</span>
-                            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">
-                                Obtén tu clave gratuita en Google AI Studio <i class="fa-solid fa-arrow-up-right-from-square"></i>
-                            </a>
-                        </div>
+                        <span class="field-hint">Si tu servidor ya tiene una clave configurada en su entorno, se usará automáticamente sin necesidad de ingresarla aquí.</span>
                     </div>
 
                     <div id="key-message-box" class="message-box hidden"></div>
                 </div>
 
                 <div class="modal-footer">
-                    <button type="button" id="btn-cancel-key" class="btn-secondary">Cancelar</button>
+                    <button type="button" id="btn-cancel-key" class="btn-secondary">Cerrar</button>
                     <button type="button" id="btn-save-key" class="btn-primary">Guardar Clave</button>
                 </div>
             </div>
@@ -345,6 +346,6 @@
     </div>
 
     <!-- Application Script -->
-    <script src="/static/js/app.js?v=7.0"></script>
+    <script src="/static/js/app.js?v=8.0"></script>
 </body>
 </html>
