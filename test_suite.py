@@ -134,6 +134,25 @@ class TestApuntesIA(unittest.TestCase):
         self.assertEqual(parsed['title'], 'Test')
         self.assertIn('sigma', parsed['formula'])
 
+    def test_gemini_models_config(self):
+        from app import GeminiConfig, GEMINI_MODELS
+        # Verify primary model is gemini-3.7-flash
+        self.assertEqual(GeminiConfig.PRIMARY_MODEL, "gemini-3.7-flash")
+        # Verify fallback is gemini-2.5-flash
+        self.assertEqual(GeminiConfig.FALLBACK_MODEL, "gemini-2.5-flash")
+        # Verify models list order
+        self.assertEqual(GeminiConfig.MODELS, ["gemini-3.7-flash", "gemini-2.5-flash"])
+        self.assertEqual(GEMINI_MODELS, ["gemini-3.7-flash", "gemini-2.5-flash"])
+        # Verify gemini-2.5-pro is completely removed
+        self.assertNotIn("gemini-2.5-pro", GeminiConfig.MODELS)
+        self.assertNotIn("gemini-2.5-pro", GEMINI_MODELS)
+        # Verify status endpoint reflects new model
+        res = self.client.get('/api/status')
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertEqual(data.get('default_model'), "gemini-3.7-flash")
+        self.assertEqual(data.get('fallback_model'), "gemini-2.5-flash")
+
 if __name__ == '__main__':
     unittest.main()
 

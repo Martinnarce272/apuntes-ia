@@ -33,6 +33,18 @@ app = Flask(__name__)
 logger = logging.getLogger("apuntes_ia")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+class GeminiConfig:
+    """Configuration for Google Gemini AI models and fallback hierarchy.
+    Primary: gemini-3.7-flash
+    Fallback: gemini-2.5-flash
+    Note: gemini-2.5-pro has been removed as it returns 404 for new users.
+    """
+    PRIMARY_MODEL = "gemini-3.7-flash"
+    FALLBACK_MODEL = "gemini-2.5-flash"
+    MODELS = [PRIMARY_MODEL, FALLBACK_MODEL]
+
+GEMINI_MODELS = GeminiConfig.MODELS
+
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
 UPLOAD_FOLDER = Path(__file__).parent / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
@@ -497,7 +509,9 @@ def check_status():
     return jsonify({
         "status": "ready",
         "engine": "Google Gemini AI (Direct SDK)",
-        "default_model": "gemini-2.5-flash",
+        "default_model": GeminiConfig.PRIMARY_MODEL,
+        "fallback_model": GeminiConfig.FALLBACK_MODEL,
+        "models": GeminiConfig.MODELS,
         "has_env_key": has_env_key,
         "version": "2.0.0",
         "message": "Servicio activo. Potenciado exclusivamente por Google Gemini AI para uso personal y privado."
@@ -517,7 +531,8 @@ def health_gemini():
         "success": True,
         "configured": True,
         "valid_format": len(api_key) >= 20,
-        "default_model": "gemini-2.5-flash"
+        "default_model": GeminiConfig.PRIMARY_MODEL,
+        "models": GeminiConfig.MODELS
     })
 
 @app.route('/api/youtube-preview', methods=['POST'])
@@ -797,7 +812,7 @@ def get_demo_notes():
 # Google Gemini AI Integration & Study Notes Generation
 # ---------------------------------------------------------------------------
 
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-3.7-flash", "gemini-2.5-pro"]
+GEMINI_MODELS = GeminiConfig.MODELS
 
 SYSTEM_PROMPT = """Eres un catedrático universitario de élite y pedagogo experto.
 Tu misión es transformar el material recibido (videos de YouTube, documentos PDF, audios o apuntes) en un conjunto magistral de apuntes de estudio universitarios, profundos, estructurados, claros y estéticamente atractivos.
