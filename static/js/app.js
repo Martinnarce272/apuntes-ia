@@ -979,11 +979,18 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // Progress stage 2: Calling Google Gemini AI
-            elements.progressBar.style.width = '60%';
+            elements.progressBar.style.width = '45%';
             elements.step1.className = 'step-item completed';
             elements.step2.className = 'step-item active';
-            elements.loadingStatusTitle.textContent = 'Generando apunte maestro con Google Gemini AI...';
-            elements.loadingStatusDesc.textContent = 'Gemini está sintetizando conceptos clave, deducciones, fórmulas KaTeX y diagramas Mermaid...';
+            const totalSources = state.selectedVideos.length + state.selectedFiles.length + (state.selectedAudios ? state.selectedAudios.length : 0) + (manualText ? 1 : 0);
+            if (totalSources > 1) {
+                elements.loadingStatusTitle.textContent = `Procesando ${totalSources} fuentes de forma independiente (Map-Reduce)...`;
+                elements.loadingStatusDesc.textContent = 'Analizando videos largos y materiales sin límites de duración con Google Gemini AI...';
+            } else {
+                elements.loadingStatusTitle.textContent = 'Generando apunte maestro con Google Gemini AI...';
+                elements.loadingStatusDesc.textContent = 'Gemini está sintetizando conceptos clave, deducciones, fórmulas KaTeX y diagramas Mermaid...';
+            }
+            simulateProgress(totalSources);
 
             const selectedDepth = document.querySelector('input[name="depth"]:checked')?.value || 'completo';
             const userInstructions = elements.instructionsInput ? elements.instructionsInput.value.trim() : '';
@@ -1045,34 +1052,28 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     let progressInterval = null;
-    function simulateProgress() {
-        let pct = 10;
-        elements.progressBar.style.width = '10%';
-        elements.step1.className = 'step-item active';
-        elements.step2.className = 'step-item';
-        elements.step3.className = 'step-item';
-        elements.loadingStatusTitle.textContent = 'Extrayendo el material fuente...';
-        elements.loadingStatusDesc.textContent = 'Leyendo transcripciones de video y páginas del PDF.';
-
+    function simulateProgress(totalSources = 1) {
+        let pct = 45;
         clearInterval(progressInterval);
         progressInterval = setInterval(() => {
-            if (pct < 45) {
-                pct += 5;
-                elements.progressBar.style.width = `${pct}%`;
-            } else if (pct < 85) {
+            if (pct < 75) {
                 pct += 2;
                 elements.progressBar.style.width = `${pct}%`;
-                elements.step2.className = 'step-item active';
-                elements.loadingStatusTitle.textContent = 'Analizando y estructurando los apuntes...';
-                elements.loadingStatusDesc.textContent = 'Sintetizando conceptos clave, deducciones matemáticas y desarrollos.';
-            } else if (pct < 96) {
+                if (totalSources > 1) {
+                    elements.loadingStatusDesc.textContent = 'Analizando fuentes en paralelo y extrayendo deducciones con KaTeX...';
+                }
+            } else if (pct < 92) {
                 pct += 1;
                 elements.progressBar.style.width = `${pct}%`;
+                elements.step2.className = 'step-item active';
+                elements.loadingStatusTitle.textContent = 'Consolidando apunte maestro definitivo...';
+                elements.loadingStatusDesc.textContent = 'Generando diagramas conceptuales Mermaid, flashcards activas y examen de autoevaluación...';
+            } else if (pct < 98) {
+                pct += 0.5;
+                elements.progressBar.style.width = `${pct}%`;
                 elements.step3.className = 'step-item active';
-                elements.loadingStatusTitle.textContent = 'Generando diagramas visuales y quiz...';
-                elements.loadingStatusDesc.textContent = 'Construyendo flashcards interactivas y mapas conceptuales.';
             }
-        }, 600);
+        }, 750);
     }
 
     function switchView(viewName) {

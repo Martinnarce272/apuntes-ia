@@ -257,6 +257,87 @@ class TestApuntesIA(unittest.TestCase):
             sources = [s for s in data['data']['sources'] if s.get('video_id') == '0XoS8EUrG3k']
             self.assertEqual(len(sources), 1)
 
+    def test_build_multimodal_video_tasks_adaptive_fps(self):
+        """Verify adaptive FPS downsampling and temporal chunking for videos of any duration."""
+        from app import build_multimodal_video_tasks
+        from unittest.mock import patch
+
+        # Case 1: Short video (87 seconds) -> 1 task, fps=0.5
+        with patch('app.get_youtube_duration_seconds', return_value=87):
+            tasks_short = build_multimodal_video_tasks('SSUTM6e4wQ4', 'Parte 1', '')
+            self.assertEqual(len(tasks_short), 1)
+            vm = tasks_short[0]['parts'][0].video_metadata
+            self.assertEqual(vm.fps, 0.5)
+            self.assertEqual(vm.start_offset, '0s')
+            self.assertEqual(vm.end_offset, '87s')
+
+        # Case 2: Long lecture video (83 min / 4,983 seconds) -> 1 task, fps=0.1 (reduces tokens by 90%!)
+        with patch('app.get_youtube_duration_seconds', return_value=4983):
+            tasks_long = build_multimodal_video_tasks('GKJV38kk7IU', 'Parte 2', '')
+            self.assertEqual(len(tasks_long), 1)
+            vm = tasks_long[0]['parts'][0].video_metadata
+            self.assertEqual(vm.fps, 0.1)
+            self.assertEqual(vm.start_offset, '0s')
+            self.assertEqual(vm.end_offset, '4983s')
+            # Tokens should be safely under 300k
+            self.assertLess(tasks_long[0]['estimated_tokens'], 400000)
+
+        # Case 3: Ultra-long conference video (4 hours / 14,400 seconds) -> 4 chunked tasks of 3600s, fps=0.1
+        with patch('app.get_youtube_duration_seconds', return_value=14400):
+            tasks_ultra = build_multimodal_video_tasks('ULTRA_VID', 'Conferencia Magistral', '')
+            self.assertEqual(len(tasks_ultra), 4)
+            for i, t in enumerate(tasks_ultra):
+                vm = t['parts'][0].video_metadata
+                self.assertEqual(vm.fps, 0.1)
+                self.assertEqual(vm.start_offset, f"{i*3600}s")
+                self.assertEqual(vm.end_offset, f"{(i+1)*3600}s")
+                self.assertLess(t['estimated_tokens'], 250000)
+
+    def test_map_reduce_multiple_sources_pipeline(self):
+        """Verify that multiple sources trigger the Map-Reduce flow: Map per source + Reduce to master note."""
+        from unittest.mock import patch, MagicMock
+        with patch('google.genai.Client') as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+
+            # Return a markdown summary for Map calls, and full JSON for Reduce call
+            map_summary_1 = "### Conceptos Parte 1\nExplicación de vigas pretensadas y fórmulas $f_c$."
+            map_summary_2 = "### Conceptos Parte 2\nDeducciones matemáticas y cálculo de armaduras."
+            final_json = json.dumps({
+                "title": "Apunte Integral de Vigas Pretensadas",
+                "overview": "Guía consolidada de toda la serie.",
+                "developments": [
+                    {"unit_number": 1, "title": "Introducción", "content_markdown": "Detalle"}
+                ],
+                "sources": []
+            })
+
+            mock_client.models.generate_content.side_effect = [
+                MagicMock(text=map_summary_1),  # Map call 1
+                MagicMock(text=map_summary_2),  # Map call 2
+                MagicMock(text=final_json)      # Reduce call
+            ]
+
+            headers = {'X-Gemini-Api-Key': 'fake_test_key'}
+            res = self.client.post('/api/generate-notes',
+                                  headers=headers,
+                                  json={
+                                      'youtube_urls': [
+                                          'https://www.youtube.com/watch?v=0XoS8EUrG3k',
+                                          'https://www.youtube.com/watch?v=SSUTM6e4wQ4'
+                                      ],
+                                      'client_transcripts': {
+                                          '0XoS8EUrG3k': 'Transcripción 1',
+                                          'SSUTM6e4wQ4': 'Transcripción 2'
+                                      }
+                                  })
+            self.assertEqual(res.status_code, 200)
+            data = json.loads(res.data)
+            self.assertTrue(data['success'])
+            self.assertEqual(data['data']['title'], "Apunte Integral de Vigas Pretensadas")
+            # Verify 3 calls were made: 2 Map + 1 Reduce
+            self.assertEqual(mock_client.models.generate_content.call_count, 3)
+
 if __name__ == '__main__':
     unittest.main()
 

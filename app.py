@@ -283,12 +283,18 @@ def get_innertube_android_data(video_id):
         details = data.get("videoDetails", {})
         title = details.get("title", f"Video {video_id}")
         author = details.get("author", "YouTube")
+        duration_sec = 0
+        try:
+            duration_sec = int(details.get("lengthSeconds", 0))
+        except Exception:
+            pass
 
         return {
             "title": title,
             "author": author,
             "thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
             "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+            "duration_seconds": duration_sec,
             "caption_tracks": caption_tracks,
             "has_captions": len(caption_tracks) > 0,
             "has_audio": selected_audio is not None,
@@ -457,6 +463,7 @@ def get_youtube_video_data(video_id):
                 "author": info.get('uploader', 'YouTube'),
                 "thumbnail": info.get('thumbnail', f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
                 "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+                "duration_seconds": int(info.get('duration', 0)),
                 "caption_tracks": caption_tracks,
                 "has_captions": len(caption_tracks) > 0,
                 "has_audio": selected_audio is not None,
@@ -478,6 +485,7 @@ def get_youtube_video_data(video_id):
             "author": meta.get("author", "YouTube"),
             "thumbnail": meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
             "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+            "duration_seconds": 0,
             "caption_tracks": [{
                 "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
                 "language_code": t_data.get('language', 'es'),
@@ -501,6 +509,7 @@ def get_youtube_video_data(video_id):
         "author": meta.get("author", "YouTube"),
         "thumbnail": meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
         "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+        "duration_seconds": 0,
         "caption_tracks": [],
         "has_captions": False,
         "has_audio": False,
@@ -514,6 +523,31 @@ def get_youtube_video_data(video_id):
         "ytdlp_err": ytdlp_err,
         "transcript_err": transcript_err
     }
+
+def get_youtube_duration_seconds(video_id):
+    """Retrieve video duration in seconds via Innertube Android API, yt-dlp, or fallback."""
+    try:
+        idata, _ = get_innertube_android_data(video_id)
+        if idata and idata.get("duration_seconds") and idata["duration_seconds"] > 0:
+            return idata["duration_seconds"]
+    except Exception:
+        pass
+
+    try:
+        ydl_opts = {
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            if info and info.get('duration'):
+                return int(info['duration'])
+    except Exception:
+        pass
+
+    return 3600  # Default to 1 hour if unknown
 
 def get_youtube_caption_tracks(video_id):
     """Retrieve available subtitle tracks and signed baseUrls."""
@@ -988,10 +1022,148 @@ def robust_parse_json(text):
             fixed2 = re.sub(r',\s*([\]}])', r'\1', fixed)
             return json.loads(fixed2)
 
+MAP_SOURCE_SYSTEM_PROMPT = """Eres un docente universitario y pedagogo de élite.
+Tu objetivo es analizar exhaustivamente la fuente de estudio provista (video audiovisual, audio, PDF o transcripción) y extraer una SÍNTESIS TÉCNICA Y PEDAGÓGICA RIGUROSA.
+
+Debes extraer y explicar con máximo detalle:
+1. CONCEPTOS TEÓRICOS FUNDAMENTALES: Principios físicos, teoremas, hipótesis y fundamentos paso a paso.
+2. FÓRMULAS, ECUACIONES Y MODELOS MATEMÁTICOS: Escribe TODAS las fórmulas matemáticas y deducciones utilizando notación KaTeX válida ($inline$ y $$bloque$$). Explica el significado físico de cada variable y constante.
+3. PROCEDIMIENTOS TÉCNICOS Y CRITERIOS PRÁCTICOS: Metodologías de cálculo, secuencias constructivas, normativas o criterios de diseño aplicados.
+4. EJEMPLOS, CASOS DE APLICACIÓN Y ESQUEMAS: Si en el material se mencionan o muestran esquemas, diagramas o pizarras, descríbelos conceptualmente con precisión.
+5. DEFINICIONES CLAVE: Términos técnicos con su definición formal.
+
+Conserva todo el rigor científico y académico del material. Escribe en ESPAÑOL fluido, claro y estructurado con subtítulos Markdown (###).
+"""
+
+def call_gemini_with_fallback(client, contents_parts, system_instruction=None, response_mime_type=None, temperature=0.3):
+    """Call Gemini using GEMINI_MODELS hierarchy with automatic exponential backoff on 503/transient errors."""
+    attempted_errors = {}
+    
+    for model_name in GEMINI_MODELS:
+        max_retries = 2
+        for attempt in range(1, max_retries + 2):
+            log_start = f"[GEMINI REQUEST] Consultando modelo: {model_name} (Intento {attempt}/{max_retries + 1})"
+            logger.info(log_start)
+            print(log_start, flush=True)
+
+            try:
+                config_args = {
+                    "temperature": temperature
+                }
+                if system_instruction:
+                    config_args["system_instruction"] = system_instruction
+                if response_mime_type:
+                    config_args["response_mime_type"] = response_mime_type
+
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents_parts,
+                    config=types.GenerateContentConfig(**config_args)
+                )
+                if response and response.text:
+                    log_success = f"[GEMINI SUCCESS] Respuesta obtenida exitosamente con el modelo: {model_name}"
+                    logger.info(log_success)
+                    print(log_success, flush=True)
+                    return response.text, model_name
+            except Exception as e:
+                err_str = str(e)
+                is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "temporarily unavailable"])
+                if is_transient and attempt <= max_retries:
+                    backoff_sec = attempt * 2  # 2s, then 4s
+                    log_retry = f"[GEMINI RETRY] Modelo '{model_name}' devolvió error transitorio ({err_str[:120]}...). Reintentando en {backoff_sec}s (intento {attempt}/{max_retries})..."
+                    logger.warning(log_retry)
+                    print(log_retry, flush=True)
+                    time.sleep(backoff_sec)
+                    continue
+                else:
+                    log_err = f"[GEMINI ERROR] Falló generación con modelo '{model_name}': {err_str}"
+                    logger.warning(log_err)
+                    print(log_err, flush=True)
+                    attempted_errors[model_name] = err_str
+                    break  # move to fallback model
+
+    err_summary = " | ".join([f"{m}: {err}" for m, err in attempted_errors.items()])
+    log_critical = f"[GEMINI CRITICAL] Todos los modelos configurados {GEMINI_MODELS} fallaron. Resumen: {err_summary}"
+    logger.error(log_critical)
+    print(log_critical, flush=True)
+    raise RuntimeError(err_summary)
+
+def build_multimodal_video_tasks(video_id, v_title, v_thumb):
+    """Create one or more source tasks for a YouTube video without captions.
+    Uses adaptive frame rate (VideoMetadata fps) and temporal chunking so that
+    even ultra-long videos (1h, 2h, 4h+) never exceed Gemini's 1M context limit.
+    """
+    duration_sec = get_youtube_duration_seconds(video_id)
+    if duration_sec <= 0:
+        duration_sec = 3600
+
+    video_uri = f"https://www.youtube.com/watch?v={video_id}"
+    tasks = []
+
+    # Adaptive FPS rules:
+    # Educational lectures have slides / whiteboards where 0.1 FPS (1 frame every 10s)
+    # preserves all formulas and diagrams while reducing video tokens by 90% (~55 tokens/sec).
+    if duration_sec <= 1200:  # <= 20 min
+        fps = 0.5
+        vm = types.VideoMetadata(fps=fps, start_offset="0s", end_offset=f"{duration_sec}s")
+        parts = [
+            types.Part(file_data=types.FileData(file_uri=video_uri), video_metadata=vm),
+            types.Part.from_text(text=f"Analiza a fondo este video '{v_title}' ({duration_sec}s) para extraer y estructurar todas sus enseñanzas técnicas y fórmulas.")
+        ]
+        tasks.append({
+            "type": "youtube_multimodal",
+            "title": v_title,
+            "video_id": video_id,
+            "thumbnail": v_thumb,
+            "duration_sec": duration_sec,
+            "parts": parts,
+            "estimated_tokens": int(duration_sec * 120)
+        })
+    elif duration_sec <= 7200:  # 20 min to 2 hours (e.g. 83m = 4983s -> ~274k tokens, 108m = 6536s -> ~359k tokens)
+        fps = 0.1
+        vm = types.VideoMetadata(fps=fps, start_offset="0s", end_offset=f"{duration_sec}s")
+        parts = [
+            types.Part(file_data=types.FileData(file_uri=video_uri), video_metadata=vm),
+            types.Part.from_text(text=f"Analiza a fondo esta clase completa '{v_title}' ({duration_sec // 60} minutos) para extraer y estructurar exhaustivamente todas sus fórmulas KaTeX, conceptos y deducciones.")
+        ]
+        tasks.append({
+            "type": "youtube_multimodal",
+            "title": v_title,
+            "video_id": video_id,
+            "thumbnail": v_thumb,
+            "duration_sec": duration_sec,
+            "parts": parts,
+            "estimated_tokens": int(duration_sec * 55)
+        })
+    else:  # > 2 hours (e.g. 3, 4, 6 hours): chunk into 3600s (1 hour) segments
+        chunk_size = 3600
+        fps = 0.1
+        total_chunks = (duration_sec + chunk_size - 1) // chunk_size
+        for i in range(total_chunks):
+            start_s = i * chunk_size
+            end_s = min(duration_sec, (i + 1) * chunk_size)
+            chunk_title = f"{v_title} (Segmento {i+1}/{total_chunks}: min {start_s//60} a {end_s//60})"
+            vm = types.VideoMetadata(fps=fps, start_offset=f"{start_s}s", end_offset=f"{end_s}s")
+            parts = [
+                types.Part(file_data=types.FileData(file_uri=video_uri), video_metadata=vm),
+                types.Part.from_text(text=f"Analiza el segmento ({start_s//60}m a {end_s//60}m) del video '{v_title}' extrayendo todas sus explicaciones y fórmulas.")
+            ]
+            tasks.append({
+                "type": "youtube_multimodal",
+                "title": chunk_title,
+                "video_id": video_id,
+                "thumbnail": v_thumb,
+                "duration_sec": end_s - start_s,
+                "parts": parts,
+                "estimated_tokens": int((end_s - start_s) * 55)
+            })
+
+    return tasks
+
 @app.route('/api/generate-notes', methods=['POST'])
 @app.route('/api/generate', methods=['POST'])
 def generate_notes():
-    """Main generation endpoint using direct Google Gemini AI."""
+    """Main generation endpoint using direct Google Gemini AI with Map-Reduce and Adaptive Video processing."""
     api_key = extract_gemini_api_key(request)
     if not api_key:
         return jsonify({
@@ -1037,7 +1209,7 @@ def generate_notes():
         except Exception:
             pass
 
-    contents_parts = []
+    source_tasks = []
     sources_list = []
     saved_temp_files = []
 
@@ -1058,7 +1230,7 @@ def generate_notes():
 
             transcript_text = None
             # Check client-side transcript first
-            if video_id in client_transcripts and len(str(client_transcripts[video_id]).strip()) > 30:
+            if video_id in client_transcripts and len(str(client_transcripts[video_id]).strip()) > 5:
                 transcript_text = str(client_transcripts[video_id]).strip()
 
             # Check server-side transcript extraction if client didn't supply one
@@ -1070,9 +1242,18 @@ def generate_notes():
             if transcript_text:
                 clean_transcript = re.sub(r'[ \t]+', ' ', transcript_text)
                 clean_transcript = re.sub(r'\n{3,}', '\n\n', clean_transcript).strip()
-                contents_parts.append(types.Part.from_text(
-                    text=f"=== FUENTE VIDEO YOUTUBE ({video_id}): '{v_title}' ===\nTranscripción completa:\n{clean_transcript}"
-                ))
+                source_tasks.append({
+                    "type": "youtube_transcript",
+                    "title": v_title,
+                    "video_id": video_id,
+                    "thumbnail": v_thumb,
+                    "parts": [
+                        types.Part.from_text(
+                            text=f"=== FUENTE VIDEO YOUTUBE ({video_id}): '{v_title}' ===\nTranscripción completa:\n{clean_transcript}"
+                        )
+                    ],
+                    "estimated_tokens": len(clean_transcript) // 4
+                })
                 sources_list.append({
                     "type": "youtube",
                     "title": v_title,
@@ -1082,14 +1263,10 @@ def generate_notes():
                 })
             else:
                 # Video has NO captions or datacenter is blocked:
-                # Use Gemini Native Multimodal Video understanding directly via YouTube URL!
-                logger.info(f"Using Gemini Native Multimodal Video understanding for {video_id}")
-                contents_parts.append(types.Part(
-                    file_data=types.FileData(file_uri=f"https://www.youtube.com/watch?v={video_id}")
-                ))
-                contents_parts.append(types.Part.from_text(
-                    text=f"Analiza este video de YouTube '{v_title}' (audio y visuales) para extraer y explicar detalladamente todos sus conceptos pedagógicos."
-                ))
+                # Use Gemini Native Multimodal Video understanding with adaptive FPS & chunking!
+                logger.info(f"Using Gemini Native Multimodal Video understanding with adaptive FPS for {video_id}")
+                video_tasks = build_multimodal_video_tasks(video_id, v_title, v_thumb)
+                source_tasks.extend(video_tasks)
                 sources_list.append({
                     "type": "youtube",
                     "title": v_title,
@@ -1110,9 +1287,14 @@ def generate_notes():
 
                 pdf_text = extract_pdf_text(dest_path)
                 if pdf_text and len(pdf_text.strip()) > 100:
-                    contents_parts.append(types.Part.from_text(
-                        text=f"=== FUENTE DOCUMENTO PDF: '{file.filename}' ===\n{pdf_text}"
-                    ))
+                    source_tasks.append({
+                        "type": "pdf_text",
+                        "title": file.filename,
+                        "parts": [
+                            types.Part.from_text(text=f"=== FUENTE DOCUMENTO PDF: '{file.filename}' ===\n{pdf_text}")
+                        ],
+                        "estimated_tokens": len(pdf_text) // 4
+                    })
                     sources_list.append({
                         "type": "pdf",
                         "filename": file.filename,
@@ -1122,10 +1304,15 @@ def generate_notes():
                     # Upload visual/scanned PDF directly to Gemini
                     logger.info(f"Uploading visual PDF {file.filename} to Gemini File API")
                     uploaded_pdf = client.files.upload(file=str(dest_path))
-                    contents_parts.append(uploaded_pdf)
-                    contents_parts.append(types.Part.from_text(
-                        text=f"Analiza este documento PDF adjunto ('{file.filename}') exhaustivamente."
-                    ))
+                    source_tasks.append({
+                        "type": "pdf_multimodal",
+                        "title": file.filename,
+                        "parts": [
+                            uploaded_pdf,
+                            types.Part.from_text(text=f"Analiza este documento PDF adjunto ('{file.filename}') exhaustivamente.")
+                        ],
+                        "estimated_tokens": 50000
+                    })
                     sources_list.append({
                         "type": "pdf",
                         "filename": file.filename,
@@ -1143,10 +1330,15 @@ def generate_notes():
 
                 logger.info(f"Uploading audio {afile.filename} to Gemini File API")
                 uploaded_audio = client.files.upload(file=str(dest_path))
-                contents_parts.append(uploaded_audio)
-                contents_parts.append(types.Part.from_text(
-                    text=f"Escucha y analiza exhaustivamente la grabación de audio ('{afile.filename}') para extraer y estructurar las enseñanzas de la clase o ponencia."
-                ))
+                source_tasks.append({
+                    "type": "audio_multimodal",
+                    "title": afile.filename,
+                    "parts": [
+                        uploaded_audio,
+                        types.Part.from_text(text=f"Escucha y analiza exhaustivamente la grabación de audio ('{afile.filename}') para extraer y estructurar las enseñanzas de la clase.")
+                    ],
+                    "estimated_tokens": 100000
+                })
                 sources_list.append({
                     "type": "audio",
                     "filename": afile.filename,
@@ -1155,146 +1347,139 @@ def generate_notes():
 
         # 4. Process manual notes
         if notes_text:
-            contents_parts.append(types.Part.from_text(
-                text=f"=== APUNTES Y NOTAS PERSONALES DEL USUARIO ===\n{notes_text}"
-            ))
+            source_tasks.append({
+                "type": "notes",
+                "title": "Notas personales",
+                "parts": [
+                    types.Part.from_text(text=f"=== APUNTES Y NOTAS PERSONALES DEL USUARIO ===\n{notes_text}")
+                ],
+                "estimated_tokens": len(notes_text) // 4
+            })
             sources_list.append({
                 "type": "notes",
                 "title": "Notas personales"
             })
 
-        if not contents_parts:
+        if not source_tasks:
             return jsonify({
                 "success": False,
                 "error": "No se proporcionó ningún material. Ingresa un video de YouTube, sube un PDF, audio o escribe tus apuntes."
             }), 400
 
-        # Add instructions part
-        inst_text = f"Genera los apuntes de estudio maestros para el material proporcionado.\nProfundidad: {depth}\nEstilo pedagógico: {style}\n"
-        if user_instructions:
-            inst_text += f"Instrucciones específicas del usuario: {user_instructions}\n"
-        contents_parts.append(types.Part.from_text(text=inst_text))
-
-        # Calculate character and estimated/real token counts BEFORE calling Gemini
-        total_chars = sum(len(p.text) for p in contents_parts if hasattr(p, 'text') and p.text)
-        has_multimodal_videos = any(s.get("mode") == "gemini_multimodal_video" for s in sources_list)
-        multimodal_count = sum(1 for s in sources_list if s.get("mode") == "gemini_multimodal_video")
-
-        total_tokens = None
+        # Safety guard for massive text inputs (> 1M tokens)
+        total_text_tokens = None
         try:
-            token_count_resp = client.models.count_tokens(
-                model=GeminiConfig.PRIMARY_MODEL,
-                contents=contents_parts
-            )
-            total_tokens = getattr(token_count_resp, 'total_tokens', None)
-        except Exception as cnt_err:
-            logger.warning(f"[GEMINI COUNT_TOKENS WARNING] No se pudo obtener conteo previo de tokens: {cnt_err}")
+            text_parts = [p for t in source_tasks for p in t["parts"] if hasattr(p, 'text') and p.text]
+            if text_parts:
+                cnt_resp = client.models.count_tokens(model=GeminiConfig.PRIMARY_MODEL, contents=text_parts)
+                raw_tokens = getattr(cnt_resp, 'total_tokens', None)
+                if isinstance(raw_tokens, (int, float)):
+                    total_text_tokens = int(raw_tokens)
+        except Exception:
+            pass
 
-        if total_tokens is None:
-            # Heurística: 1 token ~ 4 caracteres de texto; video multimodal ~290 tokens/sec (~600.000 tokens por video largo)
-            estimated_text_tokens = total_chars // 4
-            total_tokens = estimated_text_tokens + (multimodal_count * 600_000)
-
-        log_preflight = (
-            f"[GEMINI PRE-FLIGHT] Modelo objetivo: {GeminiConfig.PRIMARY_MODEL} | "
-            f"Caracteres de texto: {total_chars:,} | "
-            f"Partes en payload: {len(contents_parts)} | "
-            f"Videos multimodales directos: {multimodal_count} | "
-            f"Tokens calculados: {total_tokens:,} / 1,048,576 (Límite máximo)"
-        )
-        logger.info(log_preflight)
-        print(log_preflight, flush=True)
-
-        # Safety limit guard: prevent cryptic 400 from Gemini
         MAX_ALLOWED_TOKENS = 1_000_000
-        if total_tokens > MAX_ALLOWED_TOKENS:
-            extra_msg = ""
-            if has_multimodal_videos:
-                extra_msg = (
-                    f" Se detectó que {multimodal_count} video(s) de YouTube no cuentan con transcripción de texto "
-                    "disponible en el servidor, por lo que Gemini debe analizar el video audiovisual completo (~290 tokens por segundo de video)."
-                )
+        if total_text_tokens is not None and total_text_tokens > MAX_ALLOWED_TOKENS:
             user_err_msg = (
                 f"El contenido combinado de las fuentes es demasiado extenso "
-                f"({total_tokens:,} tokens calculados, superando el límite de 1,048,576 tokens de Gemini).{extra_msg} "
-                "Por favor probá con menos videos o videos más cortos."
+                f"({total_text_tokens:,} tokens calculados, superando el límite de 1,048,576 tokens de Gemini). "
+                "Por favor probá con menos texto o material más conciso."
             )
-            logger.warning(f"[GEMINI TOKEN LIMIT EXCEEDED] {user_err_msg}")
-            print(f"[GEMINI TOKEN LIMIT EXCEEDED] {user_err_msg}", flush=True)
             return jsonify({
                 "success": False,
                 "error": user_err_msg,
-                "total_tokens": total_tokens,
+                "total_tokens": total_text_tokens,
                 "token_limit": 1048576
             }), 400
 
-        # Generate with Gemini using model fallback hierarchy and automatic retries for transient errors
-        attempted_errors = {}
+        total_estimated_tokens = sum(t.get("estimated_tokens", 5000) for t in source_tasks)
+        log_pipeline = (
+            f"[PIPELINE START] Fuentes/tareas independientes: {len(source_tasks)} | "
+            f"Tokens estimados: {total_estimated_tokens:,} | "
+            f"Estrategia: {'FAST PATH (1 llamada directa)' if (len(source_tasks) == 1 and total_estimated_tokens <= 350000) else f'MAP-REDUCE ({len(source_tasks)} maps + 1 reduce)'}"
+        )
+        logger.info(log_pipeline)
+        print(log_pipeline, flush=True)
+
         result_data = None
-        used_model = None
+        used_model = GeminiConfig.PRIMARY_MODEL
 
-        for model_name in GEMINI_MODELS:
-            max_retries = 2
-            for attempt in range(1, max_retries + 2):
-                log_start = f"[GEMINI REQUEST] Consultando modelo: {model_name} (Intento {attempt}/{max_retries + 1}) | Tokens: {total_tokens:,}"
-                logger.info(log_start)
-                print(log_start, flush=True)
+        # Fast Path (1 single source, moderate size)
+        if len(source_tasks) == 1 and total_estimated_tokens <= 350000:
+            task = source_tasks[0]
+            fast_parts = list(task["parts"])
+            inst_text = f"Genera los apuntes de estudio maestros para el material proporcionado.\nProfundidad: {depth}\nEstilo pedagógico: {style}\n"
+            if user_instructions:
+                inst_text += f"Instrucciones específicas del usuario: {user_instructions}\n"
+            fast_parts.append(types.Part.from_text(text=inst_text))
 
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents_parts,
-                        config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
-                            response_mime_type="application/json",
-                            temperature=0.3,
-                        )
+            text_resp, used_model = call_gemini_with_fallback(
+                client,
+                fast_parts,
+                system_instruction=SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                temperature=0.3
+            )
+            result_data = robust_parse_json(text_resp)
+
+        else:
+            # Map-Reduce Path: Process each source in isolation, then consolidate
+            source_summaries = []
+            for idx, task in enumerate(source_tasks):
+                log_map = f"[MAP PHASE] ({idx+1}/{len(source_tasks)}) Analizando fuente: '{task['title']}' (tokens est: ~{task.get('estimated_tokens', 0):,})..."
+                logger.info(log_map)
+                print(log_map, flush=True)
+
+                map_parts = list(task["parts"])
+                map_parts.append(types.Part.from_text(
+                    text=(
+                        f"Analiza a fondo esta fuente de estudio ('{task['title']}'). "
+                        "Produce un extracto técnico y pedagógico exhaustivo y denso. "
+                        "Extrae todas las definiciones, fórmulas matemáticas en notación KaTeX ($inline$ y $$bloque$$), "
+                        "demostraciones, procedimientos paso a paso y criterios prácticos."
                     )
-                    if response and response.text:
-                        result_data = robust_parse_json(response.text)
-                        used_model = model_name
-                        log_success = f"[GEMINI SUCCESS] Apunte generado exitosamente con el modelo: {model_name}"
-                        logger.info(log_success)
-                        print(log_success, flush=True)
-                        result_data["_used_model"] = model_name
-                        break
-                except Exception as e:
-                    err_str = str(e)
-                    is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "temporarily unavailable"])
-                    if is_transient and attempt <= max_retries:
-                        backoff_sec = attempt * 2  # 2s on first retry, 4s on second
-                        log_retry = f"[GEMINI RETRY] Modelo '{model_name}' devolvió error transitorio ({err_str[:120]}...). Reintentando en {backoff_sec}s (intento {attempt}/{max_retries})..."
-                        logger.warning(log_retry)
-                        print(log_retry, flush=True)
-                        time.sleep(backoff_sec)
-                        continue
-                    else:
-                        log_err = f"[GEMINI ERROR] Falló generación con modelo '{model_name}': {err_str}"
-                        logger.warning(log_err)
-                        print(log_err, flush=True)
-                        attempted_errors[model_name] = err_str
-                        break
+                ))
 
-            if result_data:
-                break
+                summary_text, last_model = call_gemini_with_fallback(
+                    client,
+                    map_parts,
+                    system_instruction=MAP_SOURCE_SYSTEM_PROMPT,
+                    response_mime_type=None,
+                    temperature=0.3
+                )
+                used_model = last_model
+                source_summaries.append(f"=== SÍNTESIS TÉCNICA DE FUENTE ({idx+1}/{len(source_tasks)}): '{task['title']}' ===\n{summary_text}")
 
-        if not result_data:
-            err_summary = " | ".join([f"{m}: {err}" for m, err in attempted_errors.items()])
-            log_critical = f"[GEMINI CRITICAL] Todos los modelos configurados {GEMINI_MODELS} fallaron. Resumen: {err_summary}"
-            logger.error(log_critical)
-            print(log_critical, flush=True)
+            # Reduce Phase
+            log_reduce = f"[REDUCE PHASE] Consolidando {len(source_summaries)} síntesis independientes en el apunte maestro definitivo..."
+            logger.info(log_reduce)
+            print(log_reduce, flush=True)
 
-            if any("API_KEY_INVALID" in err or "API key not valid" in err or "403" in err for err in attempted_errors.values()):
-                return jsonify({
-                    "success": False,
-                    "needs_key": True,
-                    "error": "Tu clave de Gemini API no es válida o no tiene permisos. Por favor verifica tu clave en Google AI Studio."
-                }), 401
+            combined_summaries = "\n\n".join(source_summaries)
+            reduce_prompt = (
+                f"A continuación tienes las síntesis técnicas y pedagógicas detalladas extraídas de {len(source_summaries)} fuentes independientes de estudio:\n\n"
+                f"{combined_summaries}\n\n"
+                f"Tu misión es integrar y estructurar TODO este conocimiento en el APUNTE MAESTRO DEFINITIVO.\n"
+                f"Profundidad solicitada: {depth}\n"
+                f"Estilo pedagógico: {style}\n"
+            )
+            if user_instructions:
+                reduce_prompt += f"Instrucciones específicas del usuario: {user_instructions}\n"
+            reduce_prompt += (
+                "\nGenera el objeto JSON completo según las especificaciones del sistema, con KaTeX, diagramas Mermaid, "
+                "flashcards, quiz, consejos de examen y glosario técnico."
+            )
 
-            return jsonify({
-                "success": False,
-                "error": f"Error al generar con Gemini: {err_summary}"
-            }), 500
+            text_resp, used_model = call_gemini_with_fallback(
+                client,
+                [types.Part.from_text(text=reduce_prompt)],
+                system_instruction=SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                temperature=0.3
+            )
+            result_data = robust_parse_json(text_resp)
+
+        result_data["_used_model"] = used_model
 
         # Merge sources
         if not result_data.get("sources"):
