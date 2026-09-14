@@ -4,7 +4,7 @@ import re
 import json
 import requests
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, session
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 
@@ -21,6 +21,7 @@ env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "apuntes-ia-google-auth-secret-key-2026")
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
 UPLOAD_FOLDER = Path(__file__).parent / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
@@ -337,10 +338,17 @@ def call_gemini_with_fallback(client, contents, system_instruction=None, respons
 
 
 def get_api_key(request_data=None):
-    """Retrieve Gemini API key from request, environment, or .env file."""
+    """Retrieve Gemini API key from request, session, environment, or .env file."""
     if request_data and request_data.get('apiKey'):
         return request_data.get('apiKey').strip()
     
+    try:
+        session_key = session.get('user_api_key')
+        if session_key:
+            return session_key.strip()
+    except Exception:
+        pass
+
     header_key = request.headers.get('X-Gemini-Api-Key')
     if header_key:
         return header_key.strip()
@@ -809,13 +817,82 @@ def get_demo_notes():
 def index():
     return render_template('index.html')
 
+@app.route('/api/auth/google', methods=['POST'])
+def auth_google():
+    """Registra la sesión del usuario con su cuenta de Google."""
+    data = request.get_json() or {}
+    credential = data.get('credential')
+    email = data.get('email')
+    name = data.get('name')
+    picture = data.get('picture')
+
+    if credential:
+        try:
+            import base64
+            parts = credential.split('.')
+            if len(parts) >= 2:
+                padded = parts[1] + '=' * (-len(parts[1]) % 4)
+                payload = json.loads(base64.urlsafe_b64decode(padded.encode('utf-8')).decode('utf-8'))
+                email = payload.get('email', email)
+                name = payload.get('name', name)
+                picture = payload.get('picture', picture)
+        except Exception as e:
+            print(f"[Auth] Error decodificando credencial de Google: {e}")
+
+    if not email:
+        return jsonify({"success": False, "error": "Debes indicar un correo de Google válido."}), 400
+
+    clean_email = email.strip()
+    clean_name = (name or clean_email.split('@')[0]).strip()
+    safe_picture = picture or f"https://ui-avatars.com/api/?name={requests.utils.quote(clean_name)}&background=4285F4&color=fff"
+
+    user_info = {
+        "email": clean_email,
+        "name": clean_name,
+        "picture": safe_picture,
+        "authenticated": True
+    }
+    session['google_user'] = user_info
+
+    # Si se proporcionó una clave personal de Google AI Studio, guardarla
+    personal_key = data.get('apiKey', '').strip()
+    if personal_key:
+        session['user_api_key'] = personal_key
+
+    return jsonify({
+        "success": True,
+        "user": user_info,
+        "message": f"Sesión iniciada con Google como {clean_name}"
+    })
+
+@app.route('/api/auth/current-user', methods=['GET'])
+def get_current_user():
+    """Retorna el usuario actual de Google conectado."""
+    user = session.get('google_user')
+    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    return jsonify({
+        "authenticated": bool(user),
+        "user": user,
+        "google_client_id": google_client_id
+    })
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout_user():
+    """Cierra la sesión de Google."""
+    session.pop('google_user', None)
+    session.pop('user_api_key', None)
+    return jsonify({"success": True, "message": "Sesión cerrada correctamente"})
+
 @app.route('/api/status', methods=['GET'])
 def check_status():
     api_key = get_api_key()
+    user = session.get('google_user')
     return jsonify({
         "status": "ready",
         "has_api_key": bool(api_key),
-        "key_preview": f"{api_key[:6]}...{api_key[-4:]}" if api_key and len(api_key) > 10 else None
+        "key_preview": f"{api_key[:6]}...{api_key[-4:]}" if api_key and len(api_key) > 10 else None,
+        "authenticated": bool(user),
+        "user": user
     })
 
 @app.route('/api/save-key', methods=['POST'])

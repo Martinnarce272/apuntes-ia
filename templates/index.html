@@ -24,8 +24,11 @@
     <!-- Mermaid.js for interactive diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 
+    <!-- Google Identity Services (GIS) -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=8.0">
+    <link rel="stylesheet" href="/static/css/style.css?v=9.0">
 </head>
 <body>
     <div class="app-container">
@@ -46,11 +49,24 @@
                     <i class="fa-solid fa-sparkles"></i>
                     <span>Ver Apunte de Ejemplo</span>
                 </button>
-                <button id="btn-api-key" class="btn-secondary nav-btn btn-google-nav" title="Conexión directa a Google Gemini">
-                    <i class="fa-brands fa-google google-color-icon"></i>
-                    <span id="key-status-text">Conectando a Google...</span>
-                    <span id="key-indicator" class="status-dot"></span>
+
+                <!-- Botón Iniciar Sesión con Google (cuando no está conectado) -->
+                <button id="btn-google-login" class="btn-primary nav-btn btn-google-nav-action" title="Iniciar sesión con Google">
+                    <i class="fa-brands fa-google"></i>
+                    <span>Iniciar sesión con Google</span>
                 </button>
+
+                <!-- Chip de Usuario Google (cuando está conectado) -->
+                <div id="user-profile-chip" class="user-profile-chip hidden" title="Ver detalles de tu cuenta de Google e IA">
+                    <img id="user-avatar-img" class="user-avatar" src="https://ui-avatars.com/api/?name=Google+User&background=4285F4&color=fff" alt="Avatar">
+                    <div class="user-info-text">
+                        <span id="user-name-text" class="user-name">Usuario</span>
+                        <span id="user-email-text" class="user-email">cuenta@gmail.com</span>
+                    </div>
+                    <span class="status-dot active" title="IA Activa y Vinculada"></span>
+                    <i class="fa-solid fa-chevron-down nav-chevron"></i>
+                </div>
+
                 <button id="btn-theme-toggle" class="icon-btn" title="Cambiar tema">
                     <i class="fa-solid fa-moon"></i>
                 </button>
@@ -292,48 +308,108 @@
             </section>
         </main>
 
-        <!-- API Key Modal -->
-        <div id="modal-api-key" class="modal-overlay hidden">
-            <div class="modal-box glass-card">
+        <!-- Google Account / Login Modal -->
+        <div id="modal-google-auth" class="modal-overlay hidden">
+            <div class="modal-box glass-card google-auth-modal">
                 <div class="modal-header">
                     <div class="modal-title-wrap">
                         <i class="fa-brands fa-google icon-accent google-color-icon"></i>
-                        <h3>Conexión con Google Gemini</h3>
+                        <h3 id="google-modal-title">Cuenta de Google para IA</h3>
                     </div>
-                    <button id="btn-close-modal" class="icon-btn"><i class="fa-solid fa-xmark"></i></button>
+                    <button id="btn-close-google-modal" class="icon-btn"><i class="fa-solid fa-xmark"></i></button>
                 </div>
 
-                <div class="modal-body">
-                    <div class="google-connect-banner">
-                        <div class="google-banner-text">
-                            <h4>Conectar con tu cuenta de Google</h4>
-                            <p>ApuntesIA se comunica de forma directa y oficial con los modelos de Google Gemini a través de tu clave gratuita de Google AI Studio.</p>
-                        </div>
-                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="btn-google-direct">
+                <!-- ESTADO 1: Usuario No Conectado -->
+                <div id="auth-state-logged-out" class="modal-body auth-body">
+                    <div class="google-auth-hero">
+                        <div class="google-icon-circle">
                             <i class="fa-brands fa-google"></i>
-                            <span>Abrir Google AI Studio y Obtener Clave Gratis</span>
-                            <i class="fa-solid fa-arrow-up-right-from-square"></i>
-                        </a>
+                        </div>
+                        <h4>Inicia sesión con tu cuenta de Google</h4>
+                        <p>Identifícate con tu cuenta de Google para que la aplicación sepa con qué cuenta de IA trabajar y sincronizar tus apuntes.</p>
                     </div>
-                    
-                    <div class="input-field">
-                        <label for="input-api-key">Tu clave de Google Gemini (API Key)</label>
+
+                    <!-- GIS Google One Tap / Button Placeholder (si hay Client ID) -->
+                    <div id="gis-render-button" class="gis-button-container hidden"></div>
+
+                    <!-- Formulario Rápido de Cuenta Google -->
+                    <form id="form-quick-google" class="quick-google-form">
+                        <div class="input-field">
+                            <label for="input-google-email"><i class="fa-solid fa-envelope"></i> Tu correo de Google (Gmail / Workspace)</label>
+                            <input type="email" id="input-google-email" placeholder="tu-correo@gmail.com" required autocomplete="email">
+                        </div>
+
+                        <div class="input-field">
+                            <label for="input-google-name"><i class="fa-solid fa-user"></i> Tu Nombre / Apodo (Opcional)</label>
+                            <input type="text" id="input-google-name" placeholder="Tu nombre" autocomplete="name">
+                        </div>
+
+                        <button type="submit" id="btn-submit-google-auth" class="btn-primary btn-full btn-google-submit">
+                            <i class="fa-brands fa-google"></i>
+                            <span>Conectar con esta Cuenta de Google</span>
+                        </button>
+                    </form>
+
+                    <div class="auth-divider">
+                        <span>Opcional: Clave personal de Google AI Studio</span>
+                    </div>
+
+                    <div class="google-connect-banner compact">
+                        <div class="google-banner-text">
+                            <p>Tu app ya incluye acceso directo a Gemini. Si prefieres usar una clave personal de tu cuenta de Google, puedes ingresarla aquí:</p>
+                        </div>
                         <div class="input-with-icon">
                             <i class="fa-solid fa-key"></i>
-                            <input type="password" id="input-api-key" placeholder="AIzaSy..." autocomplete="off">
+                            <input type="password" id="input-api-key" placeholder="AIzaSy... (Opcional)">
                             <button type="button" id="btn-toggle-key-vis" class="icon-btn-inline" title="Mostrar/ocultar">
                                 <i class="fa-solid fa-eye"></i>
                             </button>
                         </div>
-                        <span class="field-hint">Si tu servidor ya tiene una clave configurada en su entorno, se usará automáticamente sin necesidad de ingresarla aquí.</span>
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="link-ai-studio">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> Obtener clave gratuita en Google AI Studio
+                        </a>
                     </div>
 
-                    <div id="key-message-box" class="message-box hidden"></div>
+                    <div id="google-auth-msg" class="message-box hidden"></div>
+                </div>
+
+                <!-- ESTADO 2: Usuario Ya Conectado -->
+                <div id="auth-state-logged-in" class="modal-body auth-body hidden">
+                    <div class="user-logged-card">
+                        <img id="card-avatar-img" class="logged-avatar" src="" alt="Avatar">
+                        <div class="logged-details">
+                            <h4 id="card-user-name">Usuario</h4>
+                            <p id="card-user-email">cuenta@gmail.com</p>
+                            <span class="user-badge-active"><i class="fa-solid fa-circle-check"></i> Cuenta de IA Vinculada</span>
+                        </div>
+                    </div>
+
+                    <div class="account-stats-box">
+                        <div class="stat-item">
+                            <span class="stat-label">Modelo de IA:</span>
+                            <span class="stat-val"><i class="fa-solid fa-bolt" style="color:var(--accent-amber)"></i> Gemini 3.5 Flash Lite (Ultrarrápido)</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Conexión con Google:</span>
+                            <span class="stat-val text-success"><i class="fa-solid fa-circle"></i> Activa y Verificada</span>
+                        </div>
+                    </div>
+
+                    <div class="account-actions">
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="btn-secondary btn-full">
+                            <i class="fa-brands fa-google"></i>
+                            <span>Administrar Claves en Google AI Studio</span>
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                        </a>
+                        <button type="button" id="btn-logout-google" class="btn-subtle btn-full btn-danger-text">
+                            <i class="fa-solid fa-arrow-right-from-bracket"></i>
+                            <span>Cambiar de Cuenta / Cerrar Sesión</span>
+                        </button>
+                    </div>
                 </div>
 
                 <div class="modal-footer">
-                    <button type="button" id="btn-cancel-key" class="btn-secondary">Cerrar</button>
-                    <button type="button" id="btn-save-key" class="btn-primary">Guardar Clave</button>
+                    <button type="button" id="btn-close-google-modal-footer" class="btn-secondary">Cerrar</button>
                 </div>
             </div>
         </div>
@@ -346,6 +422,6 @@
     </div>
 
     <!-- Application Script -->
-    <script src="/static/js/app.js?v=8.0"></script>
+    <script src="/static/js/app.js?v=9.0"></script>
 </body>
 </html>

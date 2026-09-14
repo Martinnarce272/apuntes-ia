@@ -485,6 +485,63 @@ class TestApuntesIA(unittest.TestCase):
         self.assertIsNotNone(cfg.thinking_config)
         self.assertEqual(cfg.thinking_config.thinking_budget, 0)
 
+    def test_google_auth_flow(self):
+        """Verify Google login, session retrieval, and logout endpoints."""
+        # 1. Unauthenticated initial check
+        res = self.client.get('/api/auth/current-user')
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertFalse(data['authenticated'])
+        self.assertIsNone(data['user'])
+
+        # 2. Login with email and name
+        res = self.client.post('/api/auth/google', json={
+            'email': 'martin.estudiante@gmail.com',
+            'name': 'Martín Estudiante',
+            'apiKey': 'AIzaSyTestUserKey123'
+        })
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['success'])
+        self.assertEqual(data['user']['email'], 'martin.estudiante@gmail.com')
+        self.assertEqual(data['user']['name'], 'Martín Estudiante')
+        self.assertTrue(data['user']['authenticated'])
+        self.assertIn('picture', data['user'])
+
+        # 3. Check current user reflects the session
+        res = self.client.get('/api/auth/current-user')
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['authenticated'])
+        self.assertEqual(data['user']['email'], 'martin.estudiante@gmail.com')
+
+        # 4. Check /api/status also reports authenticated user
+        res = self.client.get('/api/status')
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['authenticated'])
+        self.assertIsNotNone(data['user'])
+
+        # 5. Logout
+        res = self.client.post('/api/auth/logout')
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['success'])
+
+        # 6. Verify session is cleared
+        res = self.client.get('/api/auth/current-user')
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertFalse(data['authenticated'])
+        self.assertIsNone(data['user'])
+
+    def test_google_auth_validation(self):
+        """Verify validation requires an email."""
+        res = self.client.post('/api/auth/google', json={'name': 'Sin Correo'})
+        self.assertEqual(res.status_code, 400)
+        data = json.loads(res.data)
+        self.assertFalse(data['success'])
+
 
 if __name__ == '__main__':
     unittest.main()

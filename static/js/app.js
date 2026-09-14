@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // State management
     const state = {
         hasApiKey: false,
+        currentUser: null,
         activeTab: 'tab-notes',
         selectedVideos: [],
         selectedFiles: [],
@@ -25,18 +26,32 @@ document.addEventListener('DOMContentLoaded', () => {
         loadingView: document.getElementById('loading-view'),
         resultsView: document.getElementById('results-view'),
 
-        // Nav & Modals
-        btnApiKey: document.getElementById('btn-api-key'),
-        keyStatusText: document.getElementById('key-status-text'),
-        keyIndicator: document.getElementById('key-indicator'),
-        modalApiKey: document.getElementById('modal-api-key'),
-        btnCloseModal: document.getElementById('btn-close-modal'),
-        btnCancelKey: document.getElementById('btn-cancel-key'),
-        btnSaveKey: document.getElementById('btn-save-key'),
+        // Nav & Google Auth Elements
+        btnGoogleLogin: document.getElementById('btn-google-login'),
+        userProfileChip: document.getElementById('user-profile-chip'),
+        userAvatarImg: document.getElementById('user-avatar-img'),
+        userNameText: document.getElementById('user-name-text'),
+        userEmailText: document.getElementById('user-email-text'),
+        btnThemeToggle: document.getElementById('btn-theme-toggle'),
+
+        // Google Modal Elements
+        modalGoogleAuth: document.getElementById('modal-google-auth'),
+        btnCloseGoogleModal: document.getElementById('btn-close-google-modal'),
+        btnCloseGoogleModalFooter: document.getElementById('btn-close-google-modal-footer'),
+        authStateLoggedOut: document.getElementById('auth-state-logged-out'),
+        authStateLoggedIn: document.getElementById('auth-state-logged-in'),
+        gisRenderButton: document.getElementById('gis-render-button'),
+        formQuickGoogle: document.getElementById('form-quick-google'),
+        inputGoogleEmail: document.getElementById('input-google-email'),
+        inputGoogleName: document.getElementById('input-google-name'),
+        btnSubmitGoogleAuth: document.getElementById('btn-submit-google-auth'),
         inputApiKey: document.getElementById('input-api-key'),
         btnToggleKeyVis: document.getElementById('btn-toggle-key-vis'),
-        keyMessageBox: document.getElementById('key-message-box'),
-        btnThemeToggle: document.getElementById('btn-theme-toggle'),
+        googleAuthMsg: document.getElementById('google-auth-msg'),
+        cardAvatarImg: document.getElementById('card-avatar-img'),
+        cardUserName: document.getElementById('card-user-name'),
+        cardUserEmail: document.getElementById('card-user-email'),
+        btnLogoutGoogle: document.getElementById('btn-logout-google'),
 
         // Form & Inputs
         generatorForm: document.getElementById('generator-form'),
@@ -116,82 +131,254 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --------------------------------------------------------------------------
-    // 1. App Initialization & API Key
+    // 1. App Initialization & Google Auth Management
     // --------------------------------------------------------------------------
-    async function checkStatus() {
-        try {
-            const res = await fetch('/api/status');
-            const data = await res.json();
-            state.hasApiKey = data.has_api_key;
-            updateKeyIndicator();
-        } catch (e) {
-            console.error('Error checking status:', e);
+    function openGoogleModal() {
+        if (!elements.modalGoogleAuth) return;
+        if (elements.googleAuthMsg) {
+            elements.googleAuthMsg.className = 'message-box hidden';
+            elements.googleAuthMsg.textContent = '';
         }
-    }
 
-    function updateKeyIndicator() {
-        if (state.hasApiKey) {
-            elements.keyIndicator.classList.add('active');
-            elements.keyStatusText.textContent = 'Conectado a Google';
+        if (state.currentUser && state.currentUser.authenticated) {
+            if (elements.authStateLoggedOut) elements.authStateLoggedOut.classList.add('hidden');
+            if (elements.authStateLoggedIn) elements.authStateLoggedIn.classList.remove('hidden');
+            if (elements.cardAvatarImg) {
+                elements.cardAvatarImg.src = state.currentUser.picture || 
+                    `https://ui-avatars.com/api/?name=${encodeURIComponent(state.currentUser.name || 'U')}&background=4285F4&color=fff`;
+            }
+            if (elements.cardUserName) elements.cardUserName.textContent = state.currentUser.name || 'Usuario de Google';
+            if (elements.cardUserEmail) elements.cardUserEmail.textContent = state.currentUser.email || '';
         } else {
-            elements.keyIndicator.classList.remove('active');
-            elements.keyStatusText.textContent = 'Conectar a Google';
+            if (elements.authStateLoggedOut) elements.authStateLoggedOut.classList.remove('hidden');
+            if (elements.authStateLoggedIn) elements.authStateLoggedIn.classList.add('hidden');
+        }
+        elements.modalGoogleAuth.classList.remove('hidden');
+    }
+
+    function closeGoogleModal() {
+        if (elements.modalGoogleAuth) {
+            elements.modalGoogleAuth.classList.add('hidden');
         }
     }
 
-    // API Key Modal Handlers
-    elements.btnApiKey.addEventListener('click', () => {
-        elements.keyMessageBox.className = 'message-box hidden';
-        elements.modalApiKey.classList.remove('hidden');
-    });
+    function showGoogleAuthMsg(msg, type = 'info') {
+        if (!elements.googleAuthMsg) return;
+        elements.googleAuthMsg.textContent = msg;
+        elements.googleAuthMsg.className = `message-box ${type}`;
+    }
 
-    elements.btnCloseModal.addEventListener('click', () => {
-        elements.modalApiKey.classList.add('hidden');
-    });
-
-    elements.btnCancelKey.addEventListener('click', () => {
-        elements.modalApiKey.classList.add('hidden');
-    });
-
-    elements.btnToggleKeyVis.addEventListener('click', () => {
-        const type = elements.inputApiKey.type === 'password' ? 'text' : 'password';
-        elements.inputApiKey.type = type;
-        elements.btnToggleKeyVis.querySelector('i').className = type === 'password' ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
-    });
-
-    elements.btnSaveKey.addEventListener('click', async () => {
-        const key = elements.inputApiKey.value.trim();
-        if (!key) {
-            showKeyMessage('Por favor ingresa una clave válida.', 'error');
-            return;
-        }
-
+    function setUserAuthenticated(user) {
+        state.currentUser = user;
         try {
-            const res = await fetch('/api/save-key', {
+            localStorage.setItem('google_user', JSON.stringify(user));
+        } catch (e) {}
+
+        if (elements.btnGoogleLogin) elements.btnGoogleLogin.classList.add('hidden');
+        if (elements.userProfileChip) elements.userProfileChip.classList.remove('hidden');
+        if (elements.userAvatarImg) {
+            elements.userAvatarImg.src = user.picture || 
+                `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'U')}&background=4285F4&color=fff`;
+        }
+        if (elements.userNameText) elements.userNameText.textContent = user.name || 'Usuario';
+        if (elements.userEmailText) elements.userEmailText.textContent = user.email || '';
+    }
+
+    function setUserLoggedOut() {
+        state.currentUser = null;
+        try {
+            localStorage.removeItem('google_user');
+        } catch (e) {}
+
+        if (elements.btnGoogleLogin) elements.btnGoogleLogin.classList.remove('hidden');
+        if (elements.userProfileChip) elements.userProfileChip.classList.add('hidden');
+    }
+
+    async function checkAuthAndStatus() {
+        try {
+            // 1. Obtener usuario de la sesión actual
+            const res = await fetch('/api/auth/current-user');
+            const data = await res.json();
+
+            if (data.authenticated && data.user) {
+                setUserAuthenticated(data.user);
+            } else {
+                // Revisar si estaba guardado en localStorage
+                let localUser = null;
+                try {
+                    const stored = localStorage.getItem('google_user');
+                    if (stored) localUser = JSON.parse(stored);
+                } catch (e) {}
+
+                if (localUser && localUser.email) {
+                    try {
+                        const syncRes = await fetch('/api/auth/google', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(localUser)
+                        });
+                        const syncData = await syncRes.json();
+                        if (syncData.success && syncData.user) {
+                            setUserAuthenticated(syncData.user);
+                        } else {
+                            setUserAuthenticated(localUser);
+                        }
+                    } catch (e) {
+                        setUserAuthenticated(localUser);
+                    }
+                } else {
+                    setUserLoggedOut();
+                    // Pedir al usuario iniciar sesión en Google automáticamente para vincular su IA
+                    setTimeout(() => {
+                        openGoogleModal();
+                    }, 500);
+                }
+            }
+
+            // Inicializar botón oficial de Google GIS si está configurado
+            if (data.google_client_id && window.google && window.google.accounts) {
+                try {
+                    window.google.accounts.id.initialize({
+                        client_id: data.google_client_id,
+                        callback: handleGoogleCredentialResponse,
+                        auto_select: false
+                    });
+                    if (elements.gisRenderButton) {
+                        elements.gisRenderButton.classList.remove('hidden');
+                        window.google.accounts.id.renderButton(
+                            elements.gisRenderButton,
+                            { theme: 'filled_blue', size: 'large', width: '100%', text: 'signin_with', shape: 'rectangular' }
+                        );
+                    }
+                } catch (gisErr) {
+                    console.warn('[GIS] Error inicializando botón de Google:', gisErr);
+                }
+            }
+
+            // 2. Verificar estado general de claves API
+            const statusRes = await fetch('/api/status');
+            const statusData = await statusRes.json();
+            state.hasApiKey = statusData.has_api_key;
+        } catch (err) {
+            console.error('Error verificando autenticación:', err);
+        }
+    }
+
+    async function handleGoogleCredentialResponse(response) {
+        try {
+            showGoogleAuthMsg('Iniciando sesión con Google...', 'info');
+            const res = await fetch('/api/auth/google', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ apiKey: key })
+                body: JSON.stringify({ credential: response.credential })
             });
             const data = await res.json();
             if (data.success) {
-                state.hasApiKey = true;
-                updateKeyIndicator();
-                showKeyMessage('¡Clave guardada con éxito!', 'success');
+                setUserAuthenticated(data.user);
+                showGoogleAuthMsg(`¡Bienvenido ${data.user.name}! Tu cuenta de Google e IA está conectada.`, 'success');
+                showToast(`¡Conectado como ${data.user.email}!`, 'success');
                 setTimeout(() => {
-                    elements.modalApiKey.classList.add('hidden');
-                    elements.inputApiKey.value = '';
+                    closeGoogleModal();
                 }, 1000);
             } else {
-                showKeyMessage(data.error || 'Error al guardar la clave.', 'error');
+                showGoogleAuthMsg(data.error || 'Error al conectar con Google.', 'error');
             }
         } catch (e) {
-            showKeyMessage('Error de conexión al guardar la clave.', 'error');
+            showGoogleAuthMsg('Error de red al conectar con Google.', 'error');
         }
-    });
+    }
 
-    function showKeyMessage(msg, type) {
-        elements.keyMessageBox.textContent = msg;
-        elements.keyMessageBox.className = `message-box ${type}`;
+    // Handlers de Google Auth
+    if (elements.btnGoogleLogin) {
+        elements.btnGoogleLogin.addEventListener('click', () => {
+            openGoogleModal();
+        });
+    }
+
+    if (elements.userProfileChip) {
+        elements.userProfileChip.addEventListener('click', () => {
+            openGoogleModal();
+        });
+    }
+
+    if (elements.btnCloseGoogleModal) {
+        elements.btnCloseGoogleModal.addEventListener('click', () => {
+            closeGoogleModal();
+        });
+    }
+
+    if (elements.btnCloseGoogleModalFooter) {
+        elements.btnCloseGoogleModalFooter.addEventListener('click', () => {
+            closeGoogleModal();
+        });
+    }
+
+    if (elements.btnToggleKeyVis && elements.inputApiKey) {
+        elements.btnToggleKeyVis.addEventListener('click', () => {
+            const isPass = elements.inputApiKey.type === 'password';
+            elements.inputApiKey.type = isPass ? 'text' : 'password';
+            const icon = elements.btnToggleKeyVis.querySelector('i');
+            if (icon) icon.className = isPass ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
+        });
+    }
+
+    if (elements.formQuickGoogle) {
+        elements.formQuickGoogle.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = elements.inputGoogleEmail ? elements.inputGoogleEmail.value.trim() : '';
+            const name = elements.inputGoogleName ? elements.inputGoogleName.value.trim() : '';
+            const apiKey = elements.inputApiKey ? elements.inputApiKey.value.trim() : '';
+
+            if (!email || !email.includes('@')) {
+                showGoogleAuthMsg('Por favor ingresa un correo de Google válido (ej. tu-cuenta@gmail.com).', 'error');
+                return;
+            }
+
+            try {
+                if (elements.btnSubmitGoogleAuth) {
+                    elements.btnSubmitGoogleAuth.disabled = true;
+                    elements.btnSubmitGoogleAuth.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Conectando...</span>';
+                }
+                showGoogleAuthMsg('Vinculando tu cuenta de Google con el motor de IA...', 'info');
+
+                const res = await fetch('/api/auth/google', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, name, apiKey })
+                });
+                const data = await res.json();
+
+                if (data.success && data.user) {
+                    setUserAuthenticated(data.user);
+                    if (apiKey) state.hasApiKey = true;
+                    showGoogleAuthMsg(`¡Sesión iniciada con éxito! Cuenta de IA configurada para ${data.user.name}.`, 'success');
+                    showToast(`¡Conectado como ${data.user.email}!`, 'success');
+                    setTimeout(() => {
+                        closeGoogleModal();
+                    }, 1100);
+                } else {
+                    showGoogleAuthMsg(data.error || 'No se pudo iniciar sesión con Google.', 'error');
+                }
+            } catch (err) {
+                showGoogleAuthMsg('Error de conexión al autenticar con Google.', 'error');
+            } finally {
+                if (elements.btnSubmitGoogleAuth) {
+                    elements.btnSubmitGoogleAuth.disabled = false;
+                    elements.btnSubmitGoogleAuth.innerHTML = '<i class="fa-brands fa-google"></i> <span>Conectar con esta Cuenta de Google</span>';
+                }
+            }
+        });
+    }
+
+    if (elements.btnLogoutGoogle) {
+        elements.btnLogoutGoogle.addEventListener('click', async () => {
+            try {
+                await fetch('/api/auth/logout', { method: 'POST' });
+            } catch (e) {}
+            setUserLoggedOut();
+            showToast('Has cerrado la sesión de Google.', 'info');
+            openGoogleModal();
+        });
     }
 
     // Demo button handler
@@ -449,9 +636,9 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (!state.hasApiKey) {
-            elements.modalApiKey.classList.remove('hidden');
-            showKeyMessage('Debes ingresar tu Gemini API Key antes de generar apuntes.', 'error');
+        if (!state.currentUser && !state.hasApiKey) {
+            openGoogleModal();
+            showGoogleAuthMsg('Inicia sesión con tu cuenta de Google para comenzar a generar apuntes.', 'error');
             return;
         }
 
@@ -1121,5 +1308,5 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Startup check
-    checkStatus();
+    checkAuthAndStatus();
 });
