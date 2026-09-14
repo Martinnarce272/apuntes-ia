@@ -58,6 +58,7 @@ La lógica de reintento y salto ante 404/429 se adapta automáticamente a los mo
 La aplicación detecta de forma automática la presencia de subtítulos para optimizar velocidad y consumo de recursos:
 
 1. **Videos con Subtítulos:**
+   - Pre-extracción concurrente con `ThreadPoolExecutor` para procesar múltiples enlaces en paralelo sin esperas secuenciales de red.
    - La función `get_youtube_transcript(video_id)` consulta las pistas disponibles con `youtube-transcript-api`.
    - Prioriza pistas en español (`es`, `es-419`, `es-ES`, etc.). Si solo existen pistas en otros idiomas (ej. inglés), las traduce automáticamente a español si son traducibles.
    - Estructura el texto con marcas de tiempo cronológicas `[MM:SS] Texto`.
@@ -65,7 +66,12 @@ La aplicación detecta de forma automática la presencia de subtítulos para opt
 
 2. **Videos sin Subtítulos (Visión Multimodal Nativa):**
    - Si el video carece de subtítulos, la app recurre a la visión artificial nativa de Gemini enviando la URL del video mediante `types.Part(file_data=types.FileData(file_uri=...))`.
-   - **FPS Adaptativo:** Para videos de hasta 20 minutos se muestrea a `0.5 fps` (1 cuadro cada 2 segundos); para videos más largos (>20 min), se reduce automáticamente a `0.1 fps` (1 cuadro cada 10 segundos) para no desbordar el presupuesto de tokens.
+   - **FPS Adaptativo de Alta Velocidad:** Optimizado para capturar cualquier fórmula o diapositiva en pizarra sin saturar la IA:
+     - Videos cortos (≤ 5 min): `0.2 fps` (1 cuadro cada 5s, máx 60 fotogramas).
+     - Videos medianos (5 a 25 min): `0.1 fps` (1 cuadro cada 10s, máx 150 fotogramas).
+     - Videos largos (> 25 min): `0.05 fps` (1 cuadro cada 20s).
+     *(Reduce el tiempo de análisis visual a más de la mitad respecto a frecuencias tradicionales).*
+   - **Inferencia Inmediata (`thinking_budget=0`):** Desactiva la latencia de razonamiento previo en Gemini, haciendo que la generación empiece de forma inmediata.
    - **Procesamiento Secuencial:** Cada video sin subtítulos se analiza individualmente en una llamada dedicada previa. Tras obtener el resumen estructurado de cada video, se libera la referencia en memoria y se fuerza la recolección de basura con `gc.collect()`. Esto asegura estabilidad en servidores con memoria limitada (como los 512 MB de la capa gratuita de Render).
    - Finalmente, todos los textos extraídos se unen en un único prompt ligero de texto para generar el Apunte Maestro JSON.
 

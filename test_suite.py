@@ -450,8 +450,42 @@ class TestApuntesIA(unittest.TestCase):
         self.assertTrue(data['success'])
         self.assertEqual(data['model_used'], "gemini-3.5-flash-lite")
 
+    @patch('app.get_youtube_transcript')
+    @patch('google.genai.Client')
+    def test_thinking_budget_disabled_by_default(self, mock_client_class, mock_transcript):
+        """Verify that thinking_budget is configured to 0 by default to accelerate inference."""
+        mock_transcript.return_value = {
+            "success": True,
+            "timed_text": "[00:01] Intro",
+            "full_text": "Intro",
+            "duration_seconds": 10
+        }
+        mock_instance = mock_client_class.return_value
+        mock_instance.models.generate_content.return_value = MagicMock(text=json.dumps({
+            "title": "Test Fast",
+            "topic_overview": "Overview",
+            "estimated_study_time": "5 min",
+            "key_takeaways": [],
+            "developments": [],
+            "general_diagram": {"title": "", "mermaid_code": ""},
+            "flashcards": [],
+            "quiz": [],
+            "exam_tips": [],
+            "glossary": []
+        }))
+
+        res = self.client.post('/api/generate-notes', data={
+            'youtubeUrl': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        }, headers={'X-Gemini-Api-Key': 'fake-test-key-12345'})
+
+        self.assertEqual(res.status_code, 200)
+        call_kwargs = mock_instance.models.generate_content.call_args[1]
+        cfg = call_kwargs.get('config')
+        self.assertIsNotNone(cfg)
+        self.assertIsNotNone(cfg.thinking_config)
+        self.assertEqual(cfg.thinking_config.thinking_budget, 0)
+
 
 if __name__ == '__main__':
-
     unittest.main()
 
