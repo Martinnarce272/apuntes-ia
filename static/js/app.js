@@ -120,130 +120,192 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --------------------------------------------------------------------------
-    // 1. Puter.js & PDF.js Configuration & Utilities
+    // 1. Google Gemini API Key Management & Configuration
     // --------------------------------------------------------------------------
+    const API_KEY_STORAGE_KEY = 'gemini_api_key';
+
+    function getStoredApiKey() {
+        return (localStorage.getItem(API_KEY_STORAGE_KEY) || '').trim();
+    }
+
+    function setStoredApiKey(key) {
+        if (!key) {
+            localStorage.removeItem(API_KEY_STORAGE_KEY);
+        } else {
+            localStorage.setItem(API_KEY_STORAGE_KEY, key.trim());
+        }
+        updateApiKeyUI();
+    }
+
+    async function checkApiKeyStatus() {
+        try {
+            const storedKey = getStoredApiKey();
+            const res = await fetch('/api/health-gemini', {
+                headers: storedKey ? { 'X-Gemini-Api-Key': storedKey } : {}
+            });
+            const data = await res.json();
+            const hasKey = !!storedKey || !!data.configured;
+            updateApiKeyUI(hasKey);
+        } catch (e) {
+            updateApiKeyUI(!!getStoredApiKey());
+        }
+    }
+
+    function updateApiKeyUI(isConfigured = null) {
+        const key = getStoredApiKey();
+        const btnKey = document.getElementById('btn-api-key');
+        const statusText = document.getElementById('key-status-text');
+        const indicator = document.getElementById('key-indicator');
+
+        if (isConfigured === null) {
+            isConfigured = key.length >= 20;
+        }
+
+        if (indicator) {
+            if (isConfigured) {
+                indicator.className = 'status-dot status-active';
+                if (statusText) statusText.textContent = 'Gemini Lista';
+                if (btnKey) btnKey.title = 'Tu API Key de Gemini está configurada. Haz clic para modificarla.';
+            } else {
+                indicator.className = 'status-dot status-inactive';
+                if (statusText) statusText.textContent = 'Configurar Gemini';
+                if (btnKey) btnKey.title = 'Configura tu clave gratuita de Gemini para generar apuntes.';
+            }
+        }
+    }
+
+    function openApiKeyModal() {
+        const modal = document.getElementById('modal-api-key');
+        const input = document.getElementById('input-api-key');
+        const msgBox = document.getElementById('key-message-box');
+        if (input) input.value = getStoredApiKey();
+        if (msgBox) {
+            msgBox.className = 'message-box hidden';
+            msgBox.textContent = '';
+        }
+        if (modal) {
+            modal.classList.remove('hidden');
+        }
+    }
+
+    function closeApiKeyModal() {
+        const modal = document.getElementById('modal-api-key');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    // Connect modal elements
+    const btnApiKey = document.getElementById('btn-api-key');
+    if (btnApiKey) btnApiKey.addEventListener('click', openApiKeyModal);
+
+    const btnCloseModal = document.getElementById('btn-close-modal');
+    if (btnCloseModal) btnCloseModal.addEventListener('click', closeApiKeyModal);
+
+    const btnCancelKey = document.getElementById('btn-cancel-key');
+    if (btnCancelKey) btnCancelKey.addEventListener('click', closeApiKeyModal);
+
+    const modalApiKey = document.getElementById('modal-api-key');
+    if (modalApiKey) {
+        modalApiKey.addEventListener('click', (e) => {
+            if (e.target === modalApiKey) closeApiKeyModal();
+        });
+    }
+
+    const btnToggleVis = document.getElementById('btn-toggle-key-vis');
+    if (btnToggleVis) {
+        btnToggleVis.addEventListener('click', () => {
+            const input = document.getElementById('input-api-key');
+            if (input) {
+                const isPass = input.type === 'password';
+                input.type = isPass ? 'text' : 'password';
+                btnToggleVis.querySelector('i').className = isPass ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
+            }
+        });
+    }
+
+    const btnSaveKey = document.getElementById('btn-save-key');
+    if (btnSaveKey) {
+        btnSaveKey.addEventListener('click', () => {
+            const input = document.getElementById('input-api-key');
+            const msgBox = document.getElementById('key-message-box');
+            const val = (input ? input.value : '').trim();
+
+            if (!val) {
+                setStoredApiKey('');
+                if (msgBox) {
+                    msgBox.className = 'message-box error';
+                    msgBox.textContent = 'Clave eliminada. Se utilizará la clave del servidor si está configurada.';
+                    msgBox.classList.remove('hidden');
+                }
+                showToast('Clave eliminada.', 'info');
+                setTimeout(closeApiKeyModal, 1000);
+                return;
+            }
+
+            if (val.length < 20) {
+                if (msgBox) {
+                    msgBox.className = 'message-box error';
+                    msgBox.textContent = 'La clave parece demasiado corta. Las claves de Gemini suelen tener más de 30 caracteres (empiezan con AIzaSy... o AQ...).';
+                    msgBox.classList.remove('hidden');
+                }
+                return;
+            }
+
+            setStoredApiKey(val);
+            if (msgBox) {
+                msgBox.className = 'message-box success';
+                msgBox.textContent = '¡Clave guardada con éxito en tu navegador!';
+                msgBox.classList.remove('hidden');
+            }
+            showToast('¡Clave de Gemini guardada correctamente!', 'success');
+            setTimeout(closeApiKeyModal, 800);
+        });
+    }
+
+    // Check status on load
+    checkApiKeyStatus();
+
     if (window.pdfjsLib) {
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
 
-    const MODELOS_ORDENADOS = [
-        "google/gemini-3.8-flash",
-        "openai/gpt-5.4-nano",
-        "z-ai/glm-5.3"
-    ];
-
-    const SYSTEM_INSTRUCTION = `Eres un profesor universitario de élite y pedagogo experto. Tu misión es transformar material educativo (transcripciones de video, lecturas y documentos académicos) en un apunte de estudio integral, riguroso, claro y de máxima calidad pedagógica.
-
-REGLAS CRÍTICAS DE RESPUESTA:
-1. Responde EXCLUSIVAMENTE con un objeto JSON válido.
-2. NO incluyas texto conversacional antes ni después del JSON (sin saludos, sin markdown adicional afuera).
-3. El JSON debe tener exactamente esta estructura:
-{
-  "title": "Título descriptivo y académico del tema",
-  "topic_overview": "Resumen ejecutivo profundo del tema (2 a 4 oraciones bien fundamentadas).",
-  "estimated_study_time": "Tiempo estimado de estudio (ej: '25 min')",
-  "key_takeaways": [
-    {
-      "type": "critical | warning | tip | rule",
-      "title": "Regla de oro o punto crítico",
-      "description": "Explicación concisa y directa del concepto esencial."
-    }
-  ],
-  "developments": [
-    {
-      "unit_number": 1,
-      "title": "Título de la Unidad o Subtema",
-      "content_markdown": "Desarrollo completo en Markdown con explicaciones paso a paso. Para fórmulas matemáticas utiliza LaTeX: usa $...$ para matemáticas en línea y $$...$$ para bloques de ecuación.",
-      "visual_description": "Descripción conceptual clara de cómo imaginar visualmente este proceso o concepto.",
-      "mermaid_diagram": "graph TD\\n  A[Inicio] --> B[Paso 1]"
-    }
-  ],
-  "general_diagram": {
-    "title": "Mapa Conceptual Global",
-    "mermaid_code": "graph TD\\n  A[Concepto Central] --> B[Subconcepto 1]\\n  A --> C[Subconcepto 2]"
-  },
-  "flashcards": [
-    {
-      "topic": "Tema de la flashcard",
-      "question": "¿Pregunta desafiante para repasar activamente?",
-      "answer": "Respuesta clara y concisa."
-    }
-  ],
-  "quiz": [
-    {
-      "question": "¿Pregunta de examen de opción múltiple?",
-      "options": ["Opción A", "Opción B", "Opción C", "Opción D"],
-      "correct_index": 0,
-      "explanation": "Explicación detallada de por qué esa opción es correcta y las otras son incorrectas."
-    }
-  ],
-  "exam_tips": [
-    "Consejo de examen, trampa frecuente de profesores o demostración clave a recordar."
-  ],
-  "glossary": [
-    {
-      "term": "Término técnico",
-      "definition": "Definición precisa y comprensible."
-    }
-  ]
-}
-
-REGLAS DE CONTENIDO:
-- key_takeaways: Entre 3 y 6 puntos esenciales.
-- developments: Al menos 2 unidades completas y detalladas.
-- general_diagram: Código Mermaid válido.
-- flashcards: Mínimo 4 tarjetas de repaso activo.
-- quiz: Mínimo 3 preguntas de opción múltiple de nivel examen.
-- Idioma: Español.`;
-
     async function extractPdfTextInBrowser(file) {
         if (!window.pdfjsLib) {
-            throw new Error('La librería pdf.js no está disponible en el navegador.');
+            return { filename: file.name, pages: 1, text: '' };
         }
-        const arrayBuffer = await file.arrayBuffer();
-        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-        const pdf = await loadingTask.promise;
-        const numPages = pdf.numPages;
-        let fullText = '';
-        
-        for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-            const page = await pdf.getPage(pageNum);
-            const textContent = await page.getTextContent();
-            const pageStrings = textContent.items.map(item => item.str).join(' ');
-            if (pageStrings.trim()) {
-                fullText += `\\n--- [Página ${pageNum} / ${numPages}] ---\\n${pageStrings}\\n`;
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+            const pdf = await loadingTask.promise;
+            const numPages = pdf.numPages;
+            let fullText = '';
+            
+            for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+                const page = await pdf.getPage(pageNum);
+                const textContent = await page.getTextContent();
+                const pageStrings = textContent.items.map(item => item.str).join(' ');
+                if (pageStrings.trim()) {
+                    fullText += `\n--- [Página ${pageNum} / ${numPages}] ---\n${pageStrings}\n`;
+                }
             }
+            
+            return {
+                filename: file.name,
+                pages: numPages,
+                text: fullText.trim()
+            };
+        } catch (e) {
+            console.warn(`Error al extraer texto en navegador de ${file.name}:`, e);
+            return { filename: file.name, pages: 1, text: '' };
         }
-        
-        return {
-            filename: file.name,
-            pages: numPages,
-            text: fullText.trim()
-        };
     }
 
     class YouTubeCaptionError extends Error {
         constructor(code, message, details = {}) {
             super(message);
             this.name = 'YouTubeCaptionError';
-            this.code = code; // 'NO_CAPTIONS' | 'NETWORK_CORS_ERROR' | 'EMPTY_TRANSCRIPT' | 'VIDEO_UNAVAILABLE'
+            this.code = code;
             this.details = details;
         }
-    }
-
-    async function extractAudioTextInBrowser(file) {
-        if (typeof puter === 'undefined' || !puter.ai || !puter.ai.speech2txt) {
-            throw new Error('La función de transcripción de audio de Puter.js no está disponible.');
-        }
-        const res = await puter.ai.speech2txt(file);
-        const text = typeof res === 'string' ? res : (res?.text || res?.transcript || '');
-        if (!text || text.trim().length === 0) {
-            throw new Error(`No se pudo extraer texto de la grabación "${file.name}".`);
-        }
-        return {
-            filename: file.name,
-            text: text.trim()
-        };
     }
 
     function parseYouTubeTranscriptXml(xmlText) {
@@ -399,32 +461,8 @@ REGLAS DE CONTENIDO:
             }
         }
 
-        // 1. IF SUBTITLES EXIST: Try direct download
+        // 1. IF SUBTITLES EXIST: Try direct download from browser client
         if (tracks && tracks.length > 0) {
-            // Check if there is a direct backend API track
-            const apiTrack = tracks.find(t => t.is_api || (t.base_url && t.base_url.includes('/api/youtube-transcript')));
-            if (apiTrack && apiTrack.base_url) {
-                try {
-                    const res = await fetch(apiTrack.base_url);
-                    if (res.ok) {
-                        const tData = await res.json();
-                        if (tData.success && tData.full_text) {
-                            return {
-                                title: video.title || 'Video de YouTube',
-                                videoId: video.id,
-                                thumbnail: video.thumbnail,
-                                fullText: tData.full_text,
-                                timedText: tData.timed_text || tData.full_text,
-                                durationSeconds: 0,
-                                sourceType: 'youtube_transcript_api'
-                            };
-                        }
-                    }
-                } catch (apiErr) {
-                    console.warn('Error fetching transcript via backend apiTrack:', apiErr);
-                }
-            }
-
             const selectedTrack = tracks.find(t => 
                 !t.is_api && (
                     t.language_code === 'es' || 
@@ -448,21 +486,19 @@ REGLAS DE CONTENIDO:
                                     thumbnail: video.thumbnail,
                                     fullText: parsed.fullText,
                                     timedText: parsed.timedText,
-                                    durationSeconds: parsed.durationSeconds,
-                                    sourceType: 'subtitles'
+                                    hasCaptions: true
                                 };
                             }
                         }
                     }
                 } catch (fetchErr) {
-                    console.warn('Fallo al descargar subtítulos directos XML, intentando API de transcripciones...', fetchErr);
+                    console.warn('Fallo al descargar subtítulos directos XML en cliente:', fetchErr);
                 }
             }
         }
 
         // 2. BACKEND TRANSCRIPT API FALLBACK: Retrieve direct subtitles without downloading media
         try {
-            elements.loadingStatusDesc.textContent = `Consultando transcripción de "${video.title || 'video'}"...`;
             const tRes = await fetch(`/api/youtube-transcript?videoId=${video.id || encodeURIComponent(video.url)}`);
             if (tRes.ok) {
                 const tData = await tRes.json();
@@ -473,134 +509,23 @@ REGLAS DE CONTENIDO:
                         thumbnail: video.thumbnail,
                         fullText: tData.full_text,
                         timedText: tData.timed_text || tData.full_text,
-                        durationSeconds: 0,
-                        sourceType: 'youtube_transcript_api'
+                        hasCaptions: true
                     };
                 }
             }
         } catch (tErr) {
-            console.warn('Backend transcript API not available, intentando extracción de audio...', tErr);
+            console.warn('Backend transcript API not available:', tErr);
         }
 
-        // 3. AUTOMATIC AUDIO FALLBACK: Only if no subtitles exist anywhere -> Stream audio + Speech-to-Text!
-        try {
-            elements.loadingStatusDesc.textContent = `Descargando audio de "${video.title || 'video'}" para transcripción por IA...`;
-            console.log(`Descargando audio de YouTube para "${video.title || video.id}" para transcribir con IA...`);
-            
-            const audioRes = await fetch(`/api/youtube-audio?videoId=${video.id || encodeURIComponent(video.url)}`);
-            if (!audioRes.ok) {
-                let errDetail = `Error HTTP ${audioRes.status}`;
-                try {
-                    const errJson = await audioRes.json();
-                    if (errJson.error) errDetail = errJson.error;
-                } catch (_) {}
-                throw new Error(errDetail);
-            }
-            const audioBlob = await audioRes.blob();
-            if (!audioBlob || audioBlob.size < 500) {
-                throw new Error('El stream de audio devuelto está vacío.');
-            }
-
-            elements.loadingStatusDesc.textContent = `Transcribiendo audio de "${video.title || 'video'}" con IA (Speech-to-Text de Puter)...`;
-            console.log(`Transcribiendo audio (${(audioBlob.size / (1024*1024)).toFixed(2)} MB) con puter.ai.speech2txt...`);
-
-            const audioFile = new File([audioBlob], `youtube_${video.id || 'audio'}.m4a`, { type: audioBlob.type || 'audio/mp4' });
-            const transcriptionRes = await puter.ai.speech2txt(audioFile);
-            const audioText = typeof transcriptionRes === 'string' 
-                ? transcriptionRes 
-                : (transcriptionRes?.text || transcriptionRes?.transcript || '');
-
-            if (!audioText || audioText.trim().length < 10) {
-                throw new Error('La IA no pudo detectar palabras habladas en el audio de este video.');
-            }
-
-            showToast(`¡Audio de "${video.title || 'video'}" transcrito exitosamente con IA!`, 'success');
-
-            return {
-                title: video.title || 'Video de YouTube',
-                videoId: video.id,
-                thumbnail: video.thumbnail,
-                fullText: audioText.trim(),
-                timedText: audioText.trim(),
-                durationSeconds: 0,
-                sourceType: 'audio_speech2txt'
-            };
-        } catch (audioErr) {
-            console.error('Error al transcribir audio del video:', audioErr);
-            throw new YouTubeCaptionError(
-                'NO_CAPTIONS',
-                `No se pudo obtener la transcripción ni el audio de "${video.title || 'este video'}": ${audioErr.message || 'Error en el servicio de transcripción'}.`,
-                { video, originalError: audioErr }
-            );
-        }
-    }
-
-
-    function extractTextFromPuterResponse(res) {
-        if (!res) return '';
-        if (typeof res === 'string') return res;
-        if (typeof res.text === 'string') return res.text;
-        if (res.message && typeof res.message.content === 'string') return res.message.content;
-        if (Array.isArray(res.message?.content)) {
-            return res.message.content.map(c => typeof c === 'string' ? c : c?.text || '').join('');
-        }
-        if (typeof res.toString === 'function' && res.toString() !== '[object Object]') {
-            return res.toString();
-        }
-        try {
-            return JSON.stringify(res);
-        } catch (e) {
-            return String(res);
-        }
-    }
-
-    function extractJsonFromResponse(raw) {
-        if (!raw) return null;
-        let text = raw.trim();
-
-        // 1. Markdown code block ```json ... ``` or ``` ... ```
-        const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/i;
-        const match = text.match(codeBlockRegex);
-        if (match && match[1]) {
-            try {
-                return JSON.parse(match[1].trim());
-            } catch (e) {
-                text = match[1].trim();
-            }
-        }
-
-        // 2. Direct JSON parse
-        try {
-            return JSON.parse(text);
-        } catch (e) {}
-
-        // 3. Outermost braces
-        const firstBrace = text.indexOf('{');
-        const lastBrace = text.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-            const candidate = text.substring(firstBrace, lastBrace + 1);
-            try {
-                return JSON.parse(candidate);
-            } catch (e) {
-                try {
-                    const cleaned = candidate.replace(/,\s*([}\]])/g, '$1');
-                    return JSON.parse(cleaned);
-                } catch (e2) {
-                    return null;
-                }
-            }
-        }
-        return null;
-    }
-
-    function isPuterAuthCancelled(err) {
-        if (!err) return false;
-        const msg = (err.message || err.toString() || '').toLowerCase();
-        return msg.includes('cancel') || 
-               msg.includes('closed') || 
-               msg.includes('user_cancelled') || 
-               msg.includes('popup') || 
-               msg.includes('dismiss');
+        // 3. Video without subtitles: Google Gemini backend will analyze it natively!
+        return {
+            title: video.title || 'Video de YouTube',
+            videoId: video.id,
+            thumbnail: video.thumbnail,
+            fullText: null,
+            timedText: null,
+            hasCaptions: false
+        };
     }
 
     // Demo button handler
@@ -1001,7 +926,7 @@ REGLAS DE CONTENIDO:
     });
 
     // --------------------------------------------------------------------------
-    // 3. Form Submission & Puter.js Generation Pipeline
+    // 3. Form Submission & Google Gemini AI Pipeline
     // --------------------------------------------------------------------------
     elements.generatorForm.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -1019,250 +944,102 @@ REGLAS DE CONTENIDO:
         const hasManual = manualText.length > 0;
 
         if (!hasVideos && !hasPdfs && !hasAudios && !hasManual) {
-            showToast('Por favor agrega un enlace de YouTube, sube un PDF, un audio o pega texto de estudio.', 'error');
+            showToast('Por favor agrega un enlace de YouTube, sube un PDF, un audio o escribe apuntes de estudio.', 'error');
             return;
         }
 
-        if (typeof puter === 'undefined' || !puter.ai) {
-            showToast('La librería Puter.js no está disponible. Comprueba tu conexión a internet.', 'error');
-            return;
-        }
+        const currentApiKey = getStoredApiKey();
 
         if (elements.btnGenerate) elements.btnGenerate.disabled = true;
 
         // Switch to loading view
         switchView('loading');
         
-        // Progress stage 1: Ingestion
-        elements.progressBar.style.width = '20%';
+        // Progress stage 1: Preparing Materials
+        elements.progressBar.style.width = '25%';
         elements.step1.className = 'step-item active';
         elements.step2.className = 'step-item';
         elements.step3.className = 'step-item';
-        elements.loadingStatusTitle.textContent = 'Extrayendo contenido de las fuentes...';
-        elements.loadingStatusDesc.textContent = 'Procesando materiales en tu navegador...';
+        elements.loadingStatusTitle.textContent = 'Preparando fuentes y materiales...';
+        elements.loadingStatusDesc.textContent = 'Verificando subtítulos de YouTube y preparando documentos...';
 
         try {
-            // Extract PDFs locally in browser with pdf.js
-            const pdfResults = [];
-            for (const file of state.selectedFiles) {
-                elements.loadingStatusDesc.textContent = `Extrayendo texto de ${file.name} con pdf.js...`;
-                const res = await extractPdfTextInBrowser(file);
-                if (res.text && res.text.length > 20) {
-                    pdfResults.push(res);
-                } else {
-                    console.warn(`El archivo ${file.name} no contenía texto legible.`);
-                }
-            }
-
-            // Transcribe audio files in browser with puter.ai.speech2txt
-            const audioResults = [];
-            if (state.selectedAudios && state.selectedAudios.length > 0) {
-                for (const file of state.selectedAudios) {
-                    elements.loadingStatusDesc.textContent = `Transcribiendo audio "${file.name}" con IA...`;
-                    try {
-                        const res = await extractAudioTextInBrowser(file);
-                        audioResults.push(res);
-                    } catch (audioErr) {
-                        console.warn(`Fallo al transcribir audio ${file.name}:`, audioErr);
-                        showToast(`No se pudo transcribir "${file.name}": ${audioErr.message}`, 'warning');
-                    }
-                }
-            }
-
-            // Fetch YouTube transcripts or audio speech2txt
-            const videoResults = [];
-            const skippedVideos = [];
+            // Check client-side YouTube captions (direct timedtext download from user IP)
+            const clientTranscripts = {};
             for (const vid of state.selectedVideos) {
-                elements.loadingStatusDesc.textContent = `Procesando "${vid.title || 'video'}"...`;
+                elements.loadingStatusDesc.textContent = `Consultando subtítulos de "${vid.title || 'video'}"...`;
                 try {
-                    const res = await fetchYouTubeTranscript(vid);
-                    videoResults.push(res);
-                } catch (vidErr) {
-                    console.warn(`No se pudo procesar "${vid.title || vid.url}":`, vidErr);
-                    skippedVideos.push({ video: vid, error: vidErr });
-                }
-            }
-
-            const totalUsableSources = videoResults.length + pdfResults.length + audioResults.length + (manualText ? 1 : 0);
-
-            // If absolutely NO sources yielded usable text:
-            if (totalUsableSources === 0) {
-                if (skippedVideos.length > 0) {
-                    const firstErr = skippedVideos[0].error;
-                    if (firstErr instanceof YouTubeCaptionError && firstErr.code === 'NETWORK_CORS_ERROR') {
-                        throw new Error('Hubo un problema de conexión al consultar el video. Verifica tu red e intenta nuevamente.');
+                    const tr = await fetchYouTubeTranscript(vid);
+                    if (tr && tr.fullText && tr.fullText.length > 30) {
+                        clientTranscripts[vid.id] = tr.fullText;
                     }
-                    throw new Error(firstErr.message || 'No se pudo transcribir el audio ni los subtítulos de este video.');
+                } catch (e) {
+                    console.warn(`No se pudieron extraer subtítulos para ${vid.id} en cliente:`, e);
                 }
-                throw new Error('No se pudo extraer texto ni de los documentos, ni de los audios, ni de los videos seleccionados.');
             }
 
-            // If some videos failed but we have other valid sources:
-            if (skippedVideos.length > 0 && totalUsableSources > 0) {
-                const names = skippedVideos.map(s => `"${s.video.title || 'Video'}"`).join(', ');
-                showToast(`Se omitió ${names} (no se pudo procesar) y se continuó con el resto de fuentes disponibles.`, 'info');
-            }
-
-            // Progress stage 2: AI Call with Puter.js
-            elements.progressBar.style.width = '55%';
+            // Progress stage 2: Calling Google Gemini AI
+            elements.progressBar.style.width = '60%';
             elements.step1.className = 'step-item completed';
             elements.step2.className = 'step-item active';
-            elements.loadingStatusTitle.textContent = 'Generando apunte maestro con IA...';
-            elements.loadingStatusDesc.textContent = 'Si es tu primera vez, confirma el inicio gratuito en la ventana de Puter.';
-
-            // Construct prompt
-            let sourcesText = '';
-            if (videoResults.length > 0) {
-                sourcesText += `\\n=== TRANSCRIPCIONES DE VIDEOS DE YOUTUBE ===\\n`;
-                videoResults.forEach((vr, i) => {
-                    sourcesText += `\\n[Video #${i + 1}: "${vr.title}"]\\n${vr.timedText || vr.fullText}\\n`;
-                });
-            }
-            if (pdfResults.length > 0) {
-                sourcesText += `\\n=== CONTENIDO DE DOCUMENTOS PDF (EXTRAÍDOS EN EL CLIENTE) ===\\n`;
-                pdfResults.forEach((pr, i) => {
-                    sourcesText += `\\n[Documento #${i + 1}: "${pr.filename}" (${pr.pages} páginas)]\\n${pr.text}\\n`;
-                });
-            }
-            if (audioResults.length > 0) {
-                sourcesText += `\\n=== TRANSCRIPCIONES DE AUDIOS Y CLASES GRABADAS ===\\n`;
-                audioResults.forEach((ar, i) => {
-                    sourcesText += `\\n[Audio #${i + 1}: "${ar.filename}"]\\n${ar.text}\\n`;
-                });
-            }
-            if (manualText) {
-                sourcesText += `\\n=== APUNTES Y TRANSCRIPCIÓN MANUAL DEL ESTUDIANTE ===\\n${manualText}\\n`;
-            }
+            elements.loadingStatusTitle.textContent = 'Generando apunte maestro con Google Gemini AI...';
+            elements.loadingStatusDesc.textContent = 'Gemini está sintetizando conceptos clave, deducciones, fórmulas KaTeX y diagramas Mermaid...';
 
             const selectedDepth = document.querySelector('input[name="depth"]:checked')?.value || 'completo';
-            const depthPrompts = {
-                conciso: "NIVEL DE PROFUNDIDAD: Resumen Conciso. Ve directo a las fórmulas, leyes fundamentales y definiciones clave para un repaso rápido.",
-                completo: "NIVEL DE PROFUNDIDAD: Apunte Completo. Desarrolla las explicaciones paso a paso, contexto, deducciones, analogías y ejemplos.",
-                exhaustivo: "NIVEL DE PROFUNDIDAD: Guía Exhaustiva. Máximo nivel de detalle, demostraciones completas de teoremas o algoritmos, consideraciones teóricas y casos complejos."
-            };
+            const userInstructions = elements.instructionsInput ? elements.instructionsInput.value.trim() : '';
 
-            const userInstructions = elements.instructionsInput.value.trim();
-            let userPrompt = `${depthPrompts[selectedDepth] || depthPrompts.completo}\\n`;
-            if (userInstructions) {
-                userPrompt += `INSTRUCCIONES ADICIONALES DEL USUARIO: "${userInstructions}"\\n`;
+            const formData = new FormData();
+            formData.append('depth', selectedDepth);
+            formData.append('instructions', userInstructions);
+            formData.append('notes_text', manualText);
+            formData.append('youtube_urls', JSON.stringify(state.selectedVideos.map(v => v.url)));
+            formData.append('client_transcripts', JSON.stringify(clientTranscripts));
+
+            for (const pdf of state.selectedFiles) {
+                formData.append('pdf_files', pdf);
             }
-            userPrompt += `\\nA continuación tienes el material fuente completo para elaborar el apunte académico:\\n${sourcesText}`;
+            for (const audio of state.selectedAudios) {
+                formData.append('audio_files', audio);
+            }
+            if (currentApiKey) {
+                formData.append('apiKey', currentApiKey);
+            }
 
-            const messages = [
-                { role: "system", content: SYSTEM_INSTRUCTION },
-                { role: "user", content: userPrompt }
-            ];
+            const response = await fetch('/api/generate-notes', {
+                method: 'POST',
+                headers: currentApiKey ? { 'X-Gemini-Api-Key': currentApiKey } : {},
+                body: formData
+            });
 
-            // Puter AI Chat with Model Fallback
-            let rawResponseText = null;
-            let usedModel = null;
-            let lastError = null;
+            const data = await response.json();
 
-            for (const modelo of MODELOS_ORDENADOS) {
-                try {
-                    elements.loadingStatusTitle.textContent = `Consultando con ${modelo}...`;
-                    elements.loadingStatusDesc.textContent = 'Procesando en tu cuenta personal de Puter.js (sin cuota compartida).';
-                    console.log(`Intentando generación con modelo: ${modelo}`);
-
-                    let chatRes;
-                    try {
-                        chatRes = await puter.ai.chat(messages, { model: modelo, stream: false });
-                    } catch (msgErr) {
-                        if (isPuterAuthCancelled(msgErr)) throw msgErr;
-                        console.warn(`Fallback a prompt plano para ${modelo}:`, msgErr);
-                        chatRes = await puter.ai.chat(`${SYSTEM_INSTRUCTION}\\n\\n${userPrompt}`, { model: modelo, stream: false });
-                    }
-
-                    const extracted = extractTextFromPuterResponse(chatRes);
-                    if (extracted && extracted.trim().length > 30) {
-                        rawResponseText = extracted;
-                        usedModel = modelo;
-                        console.log(`Generación exitosa con ${modelo}`);
-                        break;
-                    }
-                } catch (modelErr) {
-                    if (isPuterAuthCancelled(modelErr)) {
-                        throw modelErr;
-                    }
-                    console.warn(`Error con modelo ${modelo}, probando el siguiente en la lista...`, modelErr);
-                    lastError = modelErr;
+            if (!response.ok || !data.success) {
+                if (response.status === 401 || data.needs_key) {
+                    switchView('input');
+                    openApiKeyModal();
+                    showToast(data.error || 'Por favor ingresa tu API Key gratuita de Google Gemini para continuar.', 'warning');
+                    return;
                 }
+                throw new Error(data.error || 'Ocurrió un error al generar los apuntes con Gemini.');
             }
 
-            if (!rawResponseText) {
-                throw new Error(lastError?.message || 'Ninguno de los modelos de IA de Puter pudo generar una respuesta. Revisa tu conexión e intenta nuevamente.');
-            }
-
-            // Progress stage 3: Parse & Structure JSON
-            elements.progressBar.style.width = '85%';
-            elements.step2.className = 'step-item completed';
-            elements.step3.className = 'step-item active';
-            elements.loadingStatusTitle.textContent = 'Estructurando apunte y diagramas...';
-            elements.loadingStatusDesc.textContent = 'Validando formato JSON, generando flashcards y diagramas Mermaid.';
-
-            let parsed = extractJsonFromResponse(rawResponseText);
-            
-            // Retry once if JSON parse failed
-            if (!parsed) {
-                console.warn('La primera respuesta no fue JSON válido. Solicitando reintento estricto...');
-                elements.loadingStatusTitle.textContent = 'Ajustando formato de respuesta...';
-                elements.loadingStatusDesc.textContent = 'Solicitando al modelo devolver únicamente el JSON válido requerido.';
-                try {
-                    const retryPrompt = `La respuesta anterior no fue un objeto JSON válido parseable. Responde ÚNICAMENTE con el objeto JSON válido solicitado (sin texto conversacional antes ni después, sin markdown ni explicaciones adicionales):\\n\\n${rawResponseText.slice(0, 4000)}`;
-                    const retryRes = await puter.ai.chat(retryPrompt, { model: usedModel || MODELOS_ORDENADOS[0], stream: false });
-                    const retryText = extractTextFromPuterResponse(retryRes);
-                    parsed = extractJsonFromResponse(retryText);
-                } catch (retryErr) {
-                    if (isPuterAuthCancelled(retryErr)) throw retryErr;
-                    console.warn('Reintento de parseo falló:', retryErr);
-                }
-            }
-
-            if (!parsed) {
-                throw new Error('La IA generó una respuesta pero el formato no pudo interpretarse correctamente. Por favor intenta presionar "Generar Apunte Inteligente" nuevamente.');
-            }
-
-            // Attach sources metadata
-            parsed.sources = [];
-            videoResults.forEach(v => {
-                parsed.sources.push({
-                    type: 'youtube',
-                    title: v.title,
-                    thumbnail: v.thumbnail
-                });
-            });
-            pdfResults.forEach(p => {
-                parsed.sources.push({
-                    type: 'pdf',
-                    filename: p.filename,
-                    pages: p.pages
-                });
-            });
-            audioResults.forEach(a => {
-                parsed.sources.push({
-                    type: 'audio',
-                    filename: a.filename
-                });
-            });
-
+            // Progress stage 3: Render
             elements.progressBar.style.width = '100%';
+            elements.step2.className = 'step-item completed';
+            elements.step3.className = 'step-item completed';
+            elements.loadingStatusTitle.textContent = '¡Apunte estructurado!';
+            elements.loadingStatusDesc.textContent = 'Renderizando fórmulas KaTeX y mapas conceptuales...';
 
-            // Render study material
-            state.currentResult = parsed;
-            renderStudyMaterial(parsed);
+            state.currentResult = data.data;
+            renderStudyMaterial(data.data);
             switchView('results');
-            showToast(`¡Apunte generado con éxito con ${usedModel}!`, 'success');
+            showToast('¡Apunte generado con éxito con Google Gemini AI!', 'success');
 
         } catch (err) {
             console.error('Error durante la generación:', err);
             switchView('input');
-            if (isPuterAuthCancelled(err)) {
-                showToast('La autenticación con Puter fue cancelada o cerrada. Para generar tu apunte gratis, confirma la ventana emergente de Puter.', 'warning');
-            } else {
-                showToast(err.message || 'Error al generar el apunte. Intenta nuevamente.', 'error');
-            }
+            showToast(err.message || 'Error al generar el apunte con Gemini. Intenta nuevamente.', 'error');
         } finally {
-            if (progressInterval) clearInterval(progressInterval);
             if (elements.btnGenerate) elements.btnGenerate.disabled = false;
         }
     });

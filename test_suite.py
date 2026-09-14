@@ -114,6 +114,26 @@ class TestApuntesIA(unittest.TestCase):
         self.assertGreater(len(data['full_text']), 100)
         self.assertIn('timed_text', data)
 
+    def test_health_gemini(self):
+        res = self.client.get('/api/health-gemini')
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertIn('configured', data)
+
+    def test_generate_notes_requires_key(self):
+        # Without key header/param, should return 401 with needs_key: True
+        res = self.client.post('/api/generate-notes', json={'youtube_url': 'https://www.youtube.com/watch?v=0XoS8EUrG3k'})
+        self.assertEqual(res.status_code, 401)
+        data = json.loads(res.data)
+        self.assertTrue(data.get('needs_key'))
+
+    def test_robust_parse_json(self):
+        from app import robust_parse_json
+        raw = '```json\n{"title": "Test", "formula": "\\frac{1}{2} \\sigma(x)"}\n```'
+        parsed = robust_parse_json(raw)
+        self.assertEqual(parsed['title'], 'Test')
+        self.assertIn('sigma', parsed['formula'])
+
 if __name__ == '__main__':
     unittest.main()
 

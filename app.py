@@ -10,9 +10,8 @@ import http.cookiejar
 import requests
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("ApuntesIA")
+from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
 
 # Ensure UTF-8 output encoding on Windows console
 if hasattr(sys.stdout, 'reconfigure'):
@@ -22,7 +21,22 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
+# Load local .env if present
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
+import pypdf
+from google import genai
+from google.genai import types
+
 app = Flask(__name__)
+logger = logging.getLogger("apuntes_ia")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
+UPLOAD_FOLDER = Path(__file__).parent / "uploads"
+UPLOAD_FOLDER.mkdir(exist_ok=True)
+app.config['UPLOAD_FOLDER'] = str(UPLOAD_FOLDER)
 
 @app.errorhandler(500)
 def handle_500(err):
@@ -479,11 +493,31 @@ def index():
 
 @app.route('/api/status', methods=['GET'])
 def check_status():
+    has_env_key = bool(os.environ.get('GEMINI_API_KEY'))
     return jsonify({
         "status": "ready",
-        "engine": "Puter.js (Client-Side AI & Transcripts)",
-        "version": "1.3.0",
-        "message": "Servicio activo. La IA corre en el navegador mediante Puter.js y las transcripciones se descargan desde el cliente."
+        "engine": "Google Gemini AI (Direct SDK)",
+        "default_model": "gemini-2.5-flash",
+        "has_env_key": has_env_key,
+        "version": "2.0.0",
+        "message": "Servicio activo. Potenciado exclusivamente por Google Gemini AI para uso personal y privado."
+    })
+
+@app.route('/api/health-gemini', methods=['GET', 'POST'])
+def health_gemini():
+    api_key = extract_gemini_api_key(request)
+    if not api_key:
+        return jsonify({
+            "success": False,
+            "configured": False,
+            "error": "No se encontró clave de API de Gemini."
+        }), 200
+    
+    return jsonify({
+        "success": True,
+        "configured": True,
+        "valid_format": len(api_key) >= 20,
+        "default_model": "gemini-2.5-flash"
     })
 
 @app.route('/api/youtube-preview', methods=['POST'])
@@ -758,6 +792,404 @@ def get_demo_notes():
         ]
     }
     return jsonify({"success": True, "data": sample})
+
+# ---------------------------------------------------------------------------
+# Google Gemini AI Integration & Study Notes Generation
+# ---------------------------------------------------------------------------
+
+GEMINI_MODELS = ["gemini-2.5-flash", "gemini-3.7-flash", "gemini-2.5-pro"]
+
+SYSTEM_PROMPT = """Eres un catedrático universitario de élite y pedagogo experto.
+Tu misión es transformar el material recibido (videos de YouTube, documentos PDF, audios o apuntes) en un conjunto magistral de apuntes de estudio universitarios, profundos, estructurados, claros y estéticamente atractivos.
+
+DEBES responder EXCLUSIVAMENTE con un único objeto JSON válido (sin texto introductorio ni explicaciones fuera del JSON) con la siguiente estructura exacta:
+{
+  "title": "Título conciso, profesional y atractivo del tema",
+  "topic_overview": "Resumen ejecutivo de alto nivel que explica la importancia, alcance e impacto del tema (2-3 párrafos)",
+  "estimated_study_time": "ej: 25 min",
+  "key_takeaways": [
+    {
+      "type": "critical",
+      "title": "Título del concepto crítico",
+      "description": "Explicación directa y memorable."
+    },
+    {
+      "type": "rule",
+      "title": "Regla de oro o principio",
+      "description": "Principio rector o axioma a recordar siempre."
+    },
+    {
+      "type": "tip",
+      "title": "Consejo de aplicación práctica",
+      "description": "Cómo aplicar este conocimiento en la práctica."
+    },
+    {
+      "type": "warning",
+      "title": "Error o trampa común",
+      "description": "Equívoco frecuente que cometen los estudiantes y cómo evitarlo."
+    }
+  ],
+  "developments": [
+    {
+      "unit_number": 1,
+      "title": "Nombre de la Unidad Temática",
+      "content_markdown": "Desarrollo profundo y exhaustivo en formato Markdown. Usa subtítulos (###), listas numeradas, viñetas y ejemplos claros. Si incluye fórmulas matemáticas o notación científica, utiliza KaTeX válido: $inline$ o $$bloque$$.",
+      "visual_description": "Descripción conceptual de lo que representa esquemáticamente esta sección.",
+      "mermaid_diagram": "graph TD\\n    A[Paso 1] --> B[Paso 2]\\n    B --> C[Resultado]"
+    }
+  ],
+  "general_diagram": {
+    "title": "Mapa Conceptual Global",
+    "mermaid_code": "graph TD\\n    A[Tema Central] --> B[Eje Teórico]\\n    A --> C[Eje Práctico]"
+  },
+  "flashcards": [
+    {
+      "topic": "Nombre del concepto o eje",
+      "question": "¿Pregunta desafiante para autoevaluación activa?",
+      "answer": "Respuesta pedagógica, rigurosa y directa."
+    }
+  ],
+  "quiz": [
+    {
+      "question": "Pregunta de opción múltiple estilo examen universitario",
+      "options": ["Opción A", "Opción B", "Opción C", "Opción D"],
+      "correct_index": 0,
+      "explanation": "Explicación detallada de por qué esta es la opción correcta y por qué las otras son incorrectas."
+    }
+  ],
+  "exam_tips": [
+    "Consejo estratégico para exámenes orales o escritos sobre este tema."
+  ],
+  "glossary": [
+    {
+      "term": "Término técnico",
+      "definition": "Definición riguroora y clara del término."
+    }
+  ]
+}
+
+Reglas mandatorias:
+1. 'key_takeaways': incluir entre 3 y 6 elementos variando los tipos ('critical', 'rule', 'tip', 'warning').
+2. 'developments': desarrollar entre 2 y 5 unidades exhaustivas. Si el tema incluye matemática o lógica, incluye fórmulas completas en KaTeX ($ y $$).
+3. 'general_diagram': diagrama conceptual en sintaxis Mermaid válida (graph TD o graph LR).
+4. 'flashcards': entre 4 y 8 tarjetas de memorización activa.
+5. 'quiz': entre 3 y 5 preguntas de opción múltiple con 4 opciones cada una y 'correct_index' (0, 1, 2 o 3).
+6. 'exam_tips': entre 2 y 4 consejos para exámenes.
+7. 'glossary': entre 3 y 6 definiciones técnicas clave.
+8. Todo el contenido debe estar en ESPAÑOL fluido, académico y pedagógico.
+9. En fórmulas KaTeX, asegúrate de escapar correctamente las barras invertidas en el JSON (ej: \\\\frac{a}{b}, \\\\sigma).
+"""
+
+def extract_gemini_api_key(req):
+    """Extract Gemini API Key from header, form, json body, query param, or environment."""
+    key = req.headers.get("X-Gemini-Api-Key")
+    if key and key.strip():
+        return key.strip()
+    
+    if req.is_json:
+        body = req.get_json(silent=True) or {}
+        key = body.get("apiKey")
+        if key and str(key).strip():
+            return str(key).strip()
+    elif req.form:
+        key = req.form.get("apiKey")
+        if key and str(key).strip():
+            return str(key).strip()
+            
+    key = req.args.get("apiKey")
+    if key and str(key).strip():
+        return str(key).strip()
+
+    env_key = os.environ.get("GEMINI_API_KEY")
+    if env_key and env_key.strip():
+        return env_key.strip()
+
+    return None
+
+def extract_pdf_text(filepath):
+    """Extract readable text from PDF pages using pypdf."""
+    try:
+        reader = pypdf.PdfReader(filepath)
+        pages_text = []
+        for i, page in enumerate(reader.pages):
+            text = page.extract_text()
+            if text and text.strip():
+                pages_text.append(f"--- Página {i+1} ---\n{text.strip()}")
+        return '\n\n'.join(pages_text)
+    except Exception as e:
+        logger.warning(f"Error extracting PDF text: {e}")
+        return ""
+
+def robust_parse_json(text):
+    """Clean and parse JSON from Gemini, handling markdown code fences, trailing commas, and unescaped LaTeX backslashes."""
+    if not text:
+        raise ValueError("Texto de respuesta vacío de Gemini.")
+    
+    cleaned = text.strip()
+    cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r'```\s*$', '', cleaned, flags=re.MULTILINE).strip()
+    
+    start = cleaned.find('{')
+    end = cleaned.rfind('}')
+    if start != -1 and end != -1:
+        cleaned = cleaned[start:end+1]
+        
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        # Escape invalid backslashes (especially from LaTeX like \frac, \sigma, \begin, etc.)
+        fixed = re.sub(r'\\(?![\\"/bfnrtu])', r'\\\\', cleaned)
+        try:
+            return json.loads(fixed)
+        except Exception:
+            fixed2 = re.sub(r',\s*([\]}])', r'\1', fixed)
+            return json.loads(fixed2)
+
+@app.route('/api/generate-notes', methods=['POST'])
+@app.route('/api/generate', methods=['POST'])
+def generate_notes():
+    """Main generation endpoint using direct Google Gemini AI."""
+    api_key = extract_gemini_api_key(request)
+    if not api_key:
+        return jsonify({
+            "success": False,
+            "needs_key": True,
+            "error": "Por favor configura tu clave de Gemini API para sintetizar tus apuntes. Es 100% gratuita y privada."
+        }), 401
+
+    is_json = request.is_json
+    body = request.get_json(silent=True) or {} if is_json else {}
+    form = request.form if not is_json else {}
+
+    # Extract parameters
+    depth = (body.get('depth') or form.get('depth') or 'standard').strip()
+    style = (body.get('style') or form.get('style') or 'academic').strip()
+    user_instructions = (body.get('instructions') or form.get('instructions') or '').strip()
+    notes_text = (body.get('notes_text') or body.get('manual_text') or form.get('notes_text') or form.get('manual_text') or '').strip()
+
+    # YouTube URLs
+    raw_yt = body.get('youtube_urls') or body.get('youtube_url') or form.get('youtube_urls') or form.get('youtube_url')
+    youtube_urls = []
+    if isinstance(raw_yt, list):
+        youtube_urls = [str(u).strip() for u in raw_yt if str(u).strip()]
+    elif isinstance(raw_yt, str) and raw_yt.strip():
+        if raw_yt.strip().startswith('['):
+            try:
+                parsed_list = json.loads(raw_yt)
+                if isinstance(parsed_list, list):
+                    youtube_urls = [str(u).strip() for u in parsed_list if str(u).strip()]
+            except Exception:
+                youtube_urls = [raw_yt.strip()]
+        else:
+            youtube_urls = [u.strip() for u in raw_yt.split(',') if u.strip()]
+
+    # Client-side transcripts map
+    raw_ct = body.get('client_transcripts') or form.get('client_transcripts')
+    client_transcripts = {}
+    if isinstance(raw_ct, dict):
+        client_transcripts = raw_ct
+    elif isinstance(raw_ct, str) and raw_ct.strip():
+        try:
+            client_transcripts = json.loads(raw_ct)
+        except Exception:
+            pass
+
+    contents_parts = []
+    sources_list = []
+    saved_temp_files = []
+
+    try:
+        client = genai.Client(api_key=api_key)
+
+        # 1. Process YouTube videos
+        for yt_url in youtube_urls:
+            video_id = extract_youtube_id(yt_url)
+            if not video_id:
+                continue
+
+            v_meta = get_youtube_metadata(video_id)
+            v_title = v_meta.get("title", f"Video {video_id}")
+            v_thumb = v_meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg")
+
+            transcript_text = None
+            # Check client-side transcript first
+            if video_id in client_transcripts and len(str(client_transcripts[video_id]).strip()) > 30:
+                transcript_text = str(client_transcripts[video_id]).strip()
+
+            # Check server-side transcript extraction if client didn't supply one
+            if not transcript_text:
+                t_data = get_youtube_transcript_api(video_id)
+                if t_data and t_data.get("full_text"):
+                    transcript_text = t_data["full_text"]
+
+            if transcript_text:
+                contents_parts.append(types.Part.from_text(
+                    text=f"=== FUENTE VIDEO YOUTUBE ({video_id}): '{v_title}' ===\nTranscripción completa:\n{transcript_text}"
+                ))
+                sources_list.append({
+                    "type": "youtube",
+                    "title": v_title,
+                    "video_id": video_id,
+                    "thumbnail": v_thumb,
+                    "has_captions": True
+                })
+            else:
+                # Video has NO captions or datacenter is blocked:
+                # Use Gemini Native Multimodal Video understanding directly via YouTube URL!
+                logger.info(f"Using Gemini Native Multimodal Video understanding for {video_id}")
+                contents_parts.append(types.Part(
+                    file_data=types.FileData(file_uri=f"https://www.youtube.com/watch?v={video_id}")
+                ))
+                contents_parts.append(types.Part.from_text(
+                    text=f"Analiza este video de YouTube '{v_title}' (audio y visuales) para extraer y explicar detalladamente todos sus conceptos pedagógicos."
+                ))
+                sources_list.append({
+                    "type": "youtube",
+                    "title": v_title,
+                    "video_id": video_id,
+                    "thumbnail": v_thumb,
+                    "has_captions": False,
+                    "mode": "gemini_multimodal_video"
+                })
+
+        # 2. Process PDF uploads
+        pdf_files = request.files.getlist('pdf_files') or request.files.getlist('files')
+        for file in pdf_files:
+            if file and file.filename:
+                safe_name = secure_filename(file.filename)
+                dest_path = UPLOAD_FOLDER / f"pdf_{os.urandom(4).hex()}_{safe_name}"
+                file.save(dest_path)
+                saved_temp_files.append(dest_path)
+
+                pdf_text = extract_pdf_text(dest_path)
+                if pdf_text and len(pdf_text.strip()) > 100:
+                    contents_parts.append(types.Part.from_text(
+                        text=f"=== FUENTE DOCUMENTO PDF: '{file.filename}' ===\n{pdf_text}"
+                    ))
+                    sources_list.append({
+                        "type": "pdf",
+                        "filename": file.filename,
+                        "pages": len(pdf_text.split("--- Página ")) - 1
+                    })
+                else:
+                    # Upload visual/scanned PDF directly to Gemini
+                    logger.info(f"Uploading visual PDF {file.filename} to Gemini File API")
+                    uploaded_pdf = client.files.upload(file=str(dest_path))
+                    contents_parts.append(uploaded_pdf)
+                    contents_parts.append(types.Part.from_text(
+                        text=f"Analiza este documento PDF adjunto ('{file.filename}') exhaustivamente."
+                    ))
+                    sources_list.append({
+                        "type": "pdf",
+                        "filename": file.filename,
+                        "mode": "gemini_file_upload"
+                    })
+
+        # 3. Process Audio uploads
+        audio_files = request.files.getlist('audio_files')
+        for afile in audio_files:
+            if afile and afile.filename:
+                safe_name = secure_filename(afile.filename)
+                dest_path = UPLOAD_FOLDER / f"audio_{os.urandom(4).hex()}_{safe_name}"
+                afile.save(dest_path)
+                saved_temp_files.append(dest_path)
+
+                logger.info(f"Uploading audio {afile.filename} to Gemini File API")
+                uploaded_audio = client.files.upload(file=str(dest_path))
+                contents_parts.append(uploaded_audio)
+                contents_parts.append(types.Part.from_text(
+                    text=f"Escucha y analiza exhaustivamente la grabación de audio ('{afile.filename}') para extraer y estructurar las enseñanzas de la clase o ponencia."
+                ))
+                sources_list.append({
+                    "type": "audio",
+                    "filename": afile.filename,
+                    "mode": "gemini_audio_upload"
+                })
+
+        # 4. Process manual notes
+        if notes_text:
+            contents_parts.append(types.Part.from_text(
+                text=f"=== APUNTES Y NOTAS PERSONALES DEL USUARIO ===\n{notes_text}"
+            ))
+            sources_list.append({
+                "type": "notes",
+                "title": "Notas personales"
+            })
+
+        if not contents_parts:
+            return jsonify({
+                "success": False,
+                "error": "No se proporcionó ningún material. Ingresa un video de YouTube, sube un PDF, audio o escribe tus apuntes."
+            }), 400
+
+        # Add instructions part
+        inst_text = f"Genera los apuntes de estudio maestros para el material proporcionado.\nProfundidad: {depth}\nEstilo pedagógico: {style}\n"
+        if user_instructions:
+            inst_text += f"Instrucciones específicas del usuario: {user_instructions}\n"
+        contents_parts.append(types.Part.from_text(text=inst_text))
+
+        # Generate with Gemini using model fallback
+        last_error = None
+        result_data = None
+
+        for model_name in GEMINI_MODELS:
+            try:
+                logger.info(f"Llamando a Gemini con modelo {model_name}...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents_parts,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                        temperature=0.3,
+                    )
+                )
+                if response and response.text:
+                    result_data = robust_parse_json(response.text)
+                    logger.info(f"Generación exitosa con {model_name}")
+                    break
+            except Exception as e:
+                logger.warning(f"Fallo con modelo {model_name}: {e}")
+                last_error = e
+
+        if not result_data:
+            err_msg = str(last_error) if last_error else "Sin respuesta de Gemini"
+            if "API_KEY_INVALID" in err_msg or "API key not valid" in err_msg or "403" in err_msg:
+                return jsonify({
+                    "success": False,
+                    "needs_key": True,
+                    "error": "Tu clave de Gemini API no es válida o no tiene permisos. Por favor verifica tu clave en Google AI Studio."
+                }), 401
+            return jsonify({
+                "success": False,
+                "error": f"Error al generar con Gemini: {err_msg}"
+            }), 500
+
+        # Merge sources
+        if not result_data.get("sources"):
+            result_data["sources"] = sources_list
+        else:
+            for s in sources_list:
+                if not any(x.get("video_id") == s.get("video_id") and s.get("video_id") for x in result_data["sources"]):
+                    result_data["sources"].append(s)
+
+        return jsonify({"success": True, "data": result_data})
+
+    except Exception as e:
+        logger.error(f"Error general en generate_notes: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": f"Error al procesar la solicitud: {str(e)}"
+        }), 500
+
+    finally:
+        # Cleanup temporary uploaded files
+        for tmp_path in saved_temp_files:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))

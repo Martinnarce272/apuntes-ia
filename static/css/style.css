@@ -1992,3 +1992,130 @@ body.light-theme .unit-content strong {
     color: var(--text-main);
 }
 
+/* ==========================================================================
+   Gemini API Key Modal
+   ========================================================================== */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 1.5rem;
+}
+
+.modal-overlay.hidden {
+    display: none;
+}
+
+.modal-box {
+    max-width: 520px;
+    width: 100%;
+    animation: modalScale 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalScale {
+    from { transform: scale(0.92); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.25rem;
+}
+
+.modal-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.modal-title-wrap h3 {
+    font-family: var(--font-heading);
+    font-size: 1.25rem;
+    font-weight: 700;
+}
+
+.icon-accent {
+    color: var(--primary);
+}
+
+.modal-text {
+    font-size: 0.92rem;
+    color: var(--text-muted);
+    margin-bottom: 1.25rem;
+}
+
+.input-field {
+    margin-bottom: 1.25rem;
+}
+
+.input-field label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+}
+
+.icon-btn-inline {
+    position: absolute;
+    right: 0.75rem;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.icon-btn-inline:hover {
+    color: var(--text-main);
+}
+
+.key-help-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: var(--radius-md);
+    padding: 0.9rem;
+    margin-bottom: 1.25rem;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+}
+
+.message-box {
+    margin-top: 0.75rem;
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+}
+
+.message-box.error {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid var(--danger);
+    color: #fca5a5;
+}
+
+.message-box.success {
+    background: rgba(16, 185, 129, 0.15);
+    border: 1px solid var(--success);
+    color: #6ee7b7;
+}
+
+.message-box.hidden {
+    display: none;
+}
+
