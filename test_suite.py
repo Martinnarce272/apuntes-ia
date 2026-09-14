@@ -138,20 +138,23 @@ class TestApuntesIA(unittest.TestCase):
         from app import GeminiConfig, GEMINI_MODELS
         # Verify primary model is gemini-3.7-flash
         self.assertEqual(GeminiConfig.PRIMARY_MODEL, "gemini-3.7-flash")
-        # Verify fallback is gemini-2.5-flash
-        self.assertEqual(GeminiConfig.FALLBACK_MODEL, "gemini-2.5-flash")
+        # Verify fallback is gemini-3.6-flash
+        self.assertEqual(GeminiConfig.FALLBACK_MODEL, "gemini-3.6-flash")
         # Verify models list order
-        self.assertEqual(GeminiConfig.MODELS, ["gemini-3.7-flash", "gemini-2.5-flash"])
-        self.assertEqual(GEMINI_MODELS, ["gemini-3.7-flash", "gemini-2.5-flash"])
-        # Verify gemini-2.5-pro is completely removed
+        self.assertEqual(GeminiConfig.MODELS, ["gemini-3.7-flash", "gemini-3.6-flash"])
+        self.assertEqual(GEMINI_MODELS, ["gemini-3.7-flash", "gemini-3.6-flash"])
+        # Verify deprecated 2.5 models are completely removed
+        self.assertNotIn("gemini-2.5-flash", GeminiConfig.MODELS)
         self.assertNotIn("gemini-2.5-pro", GeminiConfig.MODELS)
+        self.assertNotIn("gemini-2.5-flash", GEMINI_MODELS)
         self.assertNotIn("gemini-2.5-pro", GEMINI_MODELS)
-        # Verify status endpoint reflects new model
+        # Verify status endpoint reflects new model configuration
         res = self.client.get('/api/status')
         self.assertEqual(res.status_code, 200)
         data = json.loads(res.data)
         self.assertEqual(data.get('default_model'), "gemini-3.7-flash")
-        self.assertEqual(data.get('fallback_model'), "gemini-2.5-flash")
+        self.assertEqual(data.get('fallback_model'), "gemini-3.6-flash")
+        self.assertIn('commit', data)
 
 if __name__ == '__main__':
     unittest.main()

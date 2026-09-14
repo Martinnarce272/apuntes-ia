@@ -36,14 +36,26 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 class GeminiConfig:
     """Configuration for Google Gemini AI models and fallback hierarchy.
     Primary: gemini-3.7-flash
-    Fallback: gemini-2.5-flash
-    Note: gemini-2.5-pro has been removed as it returns 404 for new users.
+    Fallback: gemini-3.6-flash (recommended by Google to replace deprecated 2.5 models)
     """
     PRIMARY_MODEL = "gemini-3.7-flash"
-    FALLBACK_MODEL = "gemini-2.5-flash"
+    FALLBACK_MODEL = "gemini-3.6-flash"
     MODELS = [PRIMARY_MODEL, FALLBACK_MODEL]
 
 GEMINI_MODELS = GeminiConfig.MODELS
+
+def get_git_commit_hash():
+    """Retrieve current commit hash for deployment verification."""
+    render_commit = os.environ.get('RENDER_GIT_COMMIT')
+    if render_commit:
+        return render_commit[:7]
+    try:
+        import subprocess
+        out = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], stderr=subprocess.DEVNULL)
+        return out.decode('utf-8').strip()
+    except Exception:
+        pass
+    return "unknown"
 
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
 UPLOAD_FOLDER = Path(__file__).parent / "uploads"
@@ -509,11 +521,12 @@ def check_status():
     return jsonify({
         "status": "ready",
         "engine": "Google Gemini AI (Direct SDK)",
+        "commit": get_git_commit_hash(),
         "default_model": GeminiConfig.PRIMARY_MODEL,
         "fallback_model": GeminiConfig.FALLBACK_MODEL,
         "models": GeminiConfig.MODELS,
         "has_env_key": has_env_key,
-        "version": "2.0.0",
+        "version": "2.1.0",
         "message": "Servicio activo. Potenciado exclusivamente por Google Gemini AI para uso personal y privado."
     })
 
@@ -532,7 +545,9 @@ def health_gemini():
         "configured": True,
         "valid_format": len(api_key) >= 20,
         "default_model": GeminiConfig.PRIMARY_MODEL,
-        "models": GeminiConfig.MODELS
+        "fallback_model": GeminiConfig.FALLBACK_MODEL,
+        "models": GeminiConfig.MODELS,
+        "commit": get_git_commit_hash()
     })
 
 @app.route('/api/youtube-preview', methods=['POST'])
@@ -1143,13 +1158,17 @@ def generate_notes():
             inst_text += f"Instrucciones específicas del usuario: {user_instructions}\n"
         contents_parts.append(types.Part.from_text(text=inst_text))
 
-        # Generate with Gemini using model fallback
-        last_error = None
+        # Generate with Gemini using model fallback hierarchy
+        attempted_errors = {}
         result_data = None
+        used_model = None
 
         for model_name in GEMINI_MODELS:
+            log_start = f"[GEMINI REQUEST] Consultando modelo: {model_name} (Lista activa: {GEMINI_MODELS})"
+            logger.info(log_start)
+            print(log_start, flush=True)
+
             try:
-                logger.info(f"Llamando a Gemini con modelo {model_name}...")
                 response = client.models.generate_content(
                     model=model_name,
                     contents=contents_parts,
@@ -1161,23 +1180,35 @@ def generate_notes():
                 )
                 if response and response.text:
                     result_data = robust_parse_json(response.text)
-                    logger.info(f"Generación exitosa con {model_name}")
+                    used_model = model_name
+                    log_success = f"[GEMINI SUCCESS] Apunte generado exitosamente con el modelo: {model_name}"
+                    logger.info(log_success)
+                    print(log_success, flush=True)
+                    result_data["_used_model"] = model_name
                     break
             except Exception as e:
-                logger.warning(f"Fallo con modelo {model_name}: {e}")
-                last_error = e
+                err_str = str(e)
+                log_err = f"[GEMINI ERROR] Falló generación con modelo '{model_name}': {err_str}"
+                logger.warning(log_err)
+                print(log_err, flush=True)
+                attempted_errors[model_name] = err_str
 
         if not result_data:
-            err_msg = str(last_error) if last_error else "Sin respuesta de Gemini"
-            if "API_KEY_INVALID" in err_msg or "API key not valid" in err_msg or "403" in err_msg:
+            err_summary = " | ".join([f"{m}: {err}" for m, err in attempted_errors.items()])
+            log_critical = f"[GEMINI CRITICAL] Todos los modelos configurados {GEMINI_MODELS} fallaron. Resumen: {err_summary}"
+            logger.error(log_critical)
+            print(log_critical, flush=True)
+
+            if any("API_KEY_INVALID" in err or "API key not valid" in err or "403" in err for err in attempted_errors.values()):
                 return jsonify({
                     "success": False,
                     "needs_key": True,
                     "error": "Tu clave de Gemini API no es válida o no tiene permisos. Por favor verifica tu clave en Google AI Studio."
                 }), 401
+
             return jsonify({
                 "success": False,
-                "error": f"Error al generar con Gemini: {err_msg}"
+                "error": f"Error al generar con Gemini: {err_summary}"
             }), 500
 
         # Merge sources
