@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch, MagicMock
-from app import extract_youtube_id, app
+from app import extract_youtube_id, app, GeminiConfig
 import json
 
 class TestApuntesIA(unittest.TestCase):
@@ -242,6 +242,129 @@ class TestApuntesIA(unittest.TestCase):
         self.assertIn("Apuntes Video 1", c3)
         self.assertIn("Apuntes Video 2", c3)
 
+    def test_gemini_config_order(self):
+        """Confirm the exact model order requested by the user."""
+        self.assertEqual(GeminiConfig.PRIMARY_MODEL, "gemini-3.8-flash")
+        self.assertEqual(GeminiConfig.FALLBACK_MODEL, "gemini-3.5-flash-lite")
+        self.assertEqual(GeminiConfig.LAST_RESORT_MODELS, ["gemini-3.7-flash", "gemini-3.6-flash"])
+        self.assertEqual(GeminiConfig.ACTIVE_MODELS, ["gemini-3.8-flash", "gemini-3.5-flash-lite"])
+
+    @patch('app.get_youtube_transcript')
+    @patch('google.genai.Client')
+    def test_model_fallback_on_429_skips_immediately_to_3_5_flash_lite(self, mock_client_class, mock_transcript):
+        """When gemini-3.8-flash returns 429, it must immediately fall back to gemini-3.5-flash-lite without retrying."""
+        mock_transcript.return_value = {
+            "success": True,
+            "timed_text": "[00:01] Intro",
+            "full_text": "Intro",
+            "duration_seconds": 10
+        }
+        mock_instance = mock_client_class.return_value
+
+        def fake_generate(model, contents, config):
+            if model == "gemini-3.8-flash":
+                raise Exception("429 RESOURCE_EXHAUSTED. You exceeded your current quota...")
+            if model == "gemini-3.5-flash-lite":
+                return MagicMock(text=json.dumps({
+                    "title": "Apunte de 3.5-flash-lite",
+                    "topic_overview": "Resumen",
+                    "estimated_study_time": "10 min",
+                    "key_takeaways": [],
+                    "developments": [],
+                    "general_diagram": {"title": "", "mermaid_code": ""},
+                    "flashcards": [],
+                    "quiz": [],
+                    "exam_tips": [],
+                    "glossary": []
+                }))
+            raise Exception(f"Unexpected model {model}")
+
+        mock_instance.models.generate_content.side_effect = fake_generate
+
+        res = self.client.post('/api/generate-notes', data={
+            'youtubeUrl': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        }, headers={'X-Gemini-Api-Key': 'fake-test-key-12345'})
+
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['success'])
+        self.assertEqual(data['model_used'], "gemini-3.5-flash-lite")
+
+        # Verify calls: 3.8-flash was called exactly once (no retry), then 3.5-flash-lite was called once
+        calls = mock_instance.models.generate_content.call_args_list
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1]['model'], "gemini-3.8-flash")
+        self.assertEqual(calls[1][1]['model'], "gemini-3.5-flash-lite")
+
+    @patch('app.get_youtube_transcript')
+    @patch('google.genai.Client')
+    def test_quota_exhausted_does_not_call_last_resort_models(self, mock_client_class, mock_transcript):
+        """When 3.8 and 3.5-lite both fail with 429, 3.7 and 3.6 are NOT called."""
+        mock_transcript.return_value = {
+            "success": True,
+            "timed_text": "[00:01] Intro",
+            "full_text": "Intro",
+            "duration_seconds": 10
+        }
+        mock_instance = mock_client_class.return_value
+        called_models = []
+
+        def fake_generate(model, contents, config):
+            called_models.append(model)
+            raise Exception("429 RESOURCE_EXHAUSTED. You exceeded your current quota...")
+
+        mock_instance.models.generate_content.side_effect = fake_generate
+
+        res = self.client.post('/api/generate-notes', data={
+            'youtubeUrl': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        }, headers={'X-Gemini-Api-Key': 'fake-test-key-12345'})
+
+        self.assertEqual(res.status_code, 429)
+        # Should only have called 3.8 and 3.5-lite, NOT 3.7 or 3.6
+        self.assertEqual(called_models, ["gemini-3.8-flash", "gemini-3.5-flash-lite"])
+
+    @patch('app.get_youtube_transcript')
+    @patch('google.genai.Client')
+    def test_non_quota_error_calls_last_resort_models(self, mock_client_class, mock_transcript):
+        """When 3.8 and 3.5-lite fail with non-quota errors, 3.7 is called as last resort."""
+        mock_transcript.return_value = {
+            "success": True,
+            "timed_text": "[00:01] Intro",
+            "full_text": "Intro",
+            "duration_seconds": 10
+        }
+        mock_instance = mock_client_class.return_value
+
+        def fake_generate(model, contents, config):
+            if model in ["gemini-3.8-flash", "gemini-3.5-flash-lite"]:
+                raise Exception("500 INTERNAL_SERVER_ERROR")
+            if model == "gemini-3.7-flash":
+                return MagicMock(text=json.dumps({
+                    "title": "Apunte desde Ultimo Recurso",
+                    "topic_overview": "Resumen",
+                    "estimated_study_time": "10 min",
+                    "key_takeaways": [],
+                    "developments": [],
+                    "general_diagram": {"title": "", "mermaid_code": ""},
+                    "flashcards": [],
+                    "quiz": [],
+                    "exam_tips": [],
+                    "glossary": []
+                }))
+            raise Exception(f"Unexpected model {model}")
+
+        mock_instance.models.generate_content.side_effect = fake_generate
+
+        res = self.client.post('/api/generate-notes', data={
+            'youtubeUrl': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        }, headers={'X-Gemini-Api-Key': 'fake-test-key-12345'})
+
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['success'])
+        self.assertEqual(data['model_used'], "gemini-3.7-flash")
+
 
 if __name__ == '__main__':
     unittest.main()
+

@@ -73,6 +73,18 @@ def robust_parse_json(text):
     fixed2 = re.sub(r'\\(?![/"\\])', r'\\\\', text)
     return json.loads(fixed2, strict=False)
 
+class GeminiConfig:
+    """Configuración centralizada de modelos Gemini y orden de intento según cuota disponible.
+    1. Principal: gemini-3.8-flash (con margen de cuota disponible)
+    2. Fallback: gemini-3.5-flash-lite (500 RPD diarios, máxima disponibilidad)
+    3. Último recurso: gemini-3.7-flash y gemini-3.6-flash (solo si los anteriores fallan por motivos distintos a cuota)
+    """
+    PRIMARY_MODEL = "gemini-3.8-flash"
+    FALLBACK_MODEL = "gemini-3.5-flash-lite"
+    LAST_RESORT_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash"]
+    ACTIVE_MODELS = [PRIMARY_MODEL, FALLBACK_MODEL]
+    MODELS = ACTIVE_MODELS + LAST_RESORT_MODELS
+
 class GeminiQuotaExceeded(Exception):
     """Excepción específica cuando se agota la cuota gratuita (429 / RESOURCE_EXHAUSTED)."""
     pass
@@ -91,14 +103,22 @@ def is_quota_error(exc):
 
 def call_gemini_with_fallback(client, contents, system_instruction=None, response_mime_type=None, models=None):
     """
-    Ejecuta llamadas a Gemini con respaldo automático de modelos (3.7 -> 3.6),
-    detección de cuota (429) y reintentos controlados para 503.
+    Ejecuta llamadas a Gemini siguiendo la jerarquía configurada en GeminiConfig:
+    1. "gemini-3.8-flash" como modelo principal.
+    2. "gemini-3.5-flash-lite" como fallback (500 RPD).
+    3. "gemini-3.7-flash" y "gemini-3.6-flash" como último recurso, solo si los anteriores fallan por razones distintas a 429.
+
+    Si un modelo devuelve 429 (cuota agotada), pasa automáticamente al siguiente modelo sin reintentos innecesarios.
     """
     from google.genai import types
     import time
 
-    if models is None:
-        models = ["gemini-3.7-flash", "gemini-3.6-flash"]
+    if models is not None:
+        primary_chain = models
+        last_resort_chain = []
+    else:
+        primary_chain = GeminiConfig.ACTIVE_MODELS
+        last_resort_chain = GeminiConfig.LAST_RESORT_MODELS
 
     config = types.GenerateContentConfig(
         temperature=0.3
@@ -109,40 +129,81 @@ def call_gemini_with_fallback(client, contents, system_instruction=None, respons
         config.response_mime_type = response_mime_type
 
     last_error = None
-    saw_quota_error = False
+    all_quota_exhausted = True
 
-    for model_name in models:
-        for attempt in range(2):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=contents,
-                    config=config
-                )
-                if response and response.text:
-                    return response.text.strip()
-            except Exception as merr:
-                last_error = merr
-                err_str = str(merr)
-                print(f"[Gemini] Modelo {model_name} intento {attempt+1} falló: {err_str[:120]}")
+    # 1. Intentar la cadena activa (gemini-3.8-flash -> gemini-3.5-flash-lite)
+    for model_name in primary_chain:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+            if response and response.text:
+                print(f"[Gemini] Respondio exitosamente el modelo: {model_name}")
+                return response.text.strip(), model_name
+        except Exception as merr:
+            last_error = merr
+            err_str = str(merr)
+            print(f"[Gemini] Modelo {model_name} falló: {err_str[:140]}")
 
-                if is_quota_error(merr):
-                    saw_quota_error = True
-                    # Pasar al siguiente modelo de fallback inmediatamente sin gastar intentos
-                    break
-
+            if is_quota_error(merr):
+                # 429: No reintentar el mismo modelo. Pasar inmediatamente al siguiente modelo de la lista
+                print(f"[Gemini] Cuota agotada (429) en {model_name}. Pasando inmediatamente al siguiente modelo...")
+                continue
+            else:
+                # El fallo NO fue por cuota (ej. sobrecarga temporal 503)
+                all_quota_exhausted = False
                 if "503" in err_str or "high demand" in err_str or "unavailable" in err_str.lower():
-                    time.sleep(2)
-                else:
-                    break
+                    try:
+                        time.sleep(2)
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=contents,
+                            config=config
+                        )
+                        if response and response.text:
+                            print(f"[Gemini] Respondio exitosamente en reintento el modelo: {model_name}")
+                            return response.text.strip(), model_name
+                    except Exception as retry_err:
+                        last_error = retry_err
+                        print(f"[Gemini] Reintento en {model_name} falló: {str(retry_err)[:140]}")
+                        if is_quota_error(retry_err):
+                            continue
 
-    if saw_quota_error:
+    # Si ambos modelos activos (3.8-flash y 3.5-flash-lite) fallaron por CUOTA AGOTADA (429):
+    # No quemar gemini-3.7-flash ni gemini-3.6-flash, ya que su cuota diaria ya está agotada.
+    if all_quota_exhausted:
+        raise GeminiQuotaExceeded(
+            "Se alcanzó el límite de uso gratuito de Gemini por ahora. "
+            "Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
+        )
+
+    # 2. Si fallaron por un motivo distinto a cuota agotada, probar último recurso (3.7 y 3.6)
+    for model_name in last_resort_chain:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+            if response and response.text:
+                print(f"[Gemini] Respondio exitosamente (último recurso) el modelo: {model_name}")
+                return response.text.strip(), model_name
+        except Exception as merr:
+            last_error = merr
+            print(f"[Gemini] Último recurso {model_name} falló: {str(merr)[:140]}")
+            if is_quota_error(merr):
+                continue
+
+    if is_quota_error(last_error):
         raise GeminiQuotaExceeded(
             "Se alcanzó el límite de uso gratuito de Gemini por ahora. "
             "Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
         )
 
     raise last_error or Exception("No se obtuvo respuesta de ninguno de los modelos de Gemini.")
+
 
 def get_api_key(request_data=None):
     """Retrieve Gemini API key from request, environment, or .env file."""
@@ -698,7 +759,7 @@ Extrae con máximo rigor pedagógico todo su contenido académico y formativo:
 Escribe un desarrollo analítico muy detallado, exhaustivo y estructurado cronológicamente con todo el contenido del video."""
                 
                 print(f"[Proceso Secuencial] Analizando video #{idx+1} ('{v_meta['title']}') individualmente con Gemini...")
-                video_summary = call_gemini_with_fallback(
+                video_summary, video_model = call_gemini_with_fallback(
                     client=client,
                     contents=[video_part, extract_prompt]
                 )
@@ -715,10 +776,11 @@ Escribe un desarrollo analítico muy detallado, exhaustivo y estructurado cronol
                     "thumbnail": v_meta["thumbnail"],
                     "has_captions": False,
                     "mode": "multimodal_vision",
+                    "model_used": video_model,
                     "order": idx + 1
                 })
                 source_texts.append(
-                    f"=== FUENTE VIDEO DE YOUTUBE #{idx+1} (ANÁLISIS MULTIMODAL): '{v_meta['title']}' (ID: {video_id}) ===\n"
+                    f"=== FUENTE VIDEO DE YOUTUBE #{idx+1} (ANÁLISIS MULTIMODAL - MODELO {video_model}): '{v_meta['title']}' (ID: {video_id}) ===\n"
                     f"{video_summary}"
                 )
                 
@@ -780,7 +842,7 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
 """
 
         print("[Proceso Síntesis] Generando Apunte Maestro final en formato JSON...")
-        raw_response = call_gemini_with_fallback(
+        raw_response, synth_model = call_gemini_with_fallback(
             client=client,
             contents=user_prompt,
             system_instruction=SYSTEM_INSTRUCTION,
@@ -811,9 +873,11 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
 
         result_data["sources"] = collected_sources
         result_data["video_metadata"] = video_metadata
+        result_data["model_used"] = synth_model
         
         return jsonify({
             "success": True,
+            "model_used": synth_model,
             "data": result_data
         })
 
