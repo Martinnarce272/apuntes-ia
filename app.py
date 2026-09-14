@@ -73,6 +73,77 @@ def robust_parse_json(text):
     fixed2 = re.sub(r'\\(?![/"\\])', r'\\\\', text)
     return json.loads(fixed2, strict=False)
 
+class GeminiQuotaExceeded(Exception):
+    """Excepción específica cuando se agota la cuota gratuita (429 / RESOURCE_EXHAUSTED)."""
+    pass
+
+def is_quota_error(exc):
+    """Detecta si un error corresponde a límite de cuota (HTTP 429 o RESOURCE_EXHAUSTED)."""
+    if not exc:
+        return False
+    msg = str(exc).lower()
+    code = getattr(exc, 'code', None)
+    status_code = getattr(exc, 'status_code', None)
+    if code == 429 or status_code == 429:
+        return True
+    keywords = ["429", "resource_exhausted", "quota", "ratelimit", "rate limit", "exceeded your current quota"]
+    return any(k in msg for k in keywords)
+
+def call_gemini_with_fallback(client, contents, system_instruction=None, response_mime_type=None, models=None):
+    """
+    Ejecuta llamadas a Gemini con respaldo automático de modelos (3.7 -> 3.6),
+    detección de cuota (429) y reintentos controlados para 503.
+    """
+    from google.genai import types
+    import time
+
+    if models is None:
+        models = ["gemini-3.7-flash", "gemini-3.6-flash"]
+
+    config = types.GenerateContentConfig(
+        temperature=0.3
+    )
+    if system_instruction:
+        config.system_instruction = system_instruction
+    if response_mime_type:
+        config.response_mime_type = response_mime_type
+
+    last_error = None
+    saw_quota_error = False
+
+    for model_name in models:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config
+                )
+                if response and response.text:
+                    return response.text.strip()
+            except Exception as merr:
+                last_error = merr
+                err_str = str(merr)
+                print(f"[Gemini] Modelo {model_name} intento {attempt+1} falló: {err_str[:120]}")
+
+                if is_quota_error(merr):
+                    saw_quota_error = True
+                    # Pasar al siguiente modelo de fallback inmediatamente sin gastar intentos
+                    break
+
+                if "503" in err_str or "high demand" in err_str or "unavailable" in err_str.lower():
+                    time.sleep(2)
+                else:
+                    break
+
+    if saw_quota_error:
+        raise GeminiQuotaExceeded(
+            "Se alcanzó el límite de uso gratuito de Gemini por ahora. "
+            "Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
+        )
+
+    raise last_error or Exception("No se obtuvo respuesta de ninguno de los modelos de Gemini.")
+
 def get_api_key(request_data=None):
     """Retrieve Gemini API key from request, environment, or .env file."""
     if request_data and request_data.get('apiKey'):
@@ -557,13 +628,19 @@ def generate_notes():
             "error": "Se requiere una clave de API de Gemini (GEMINI_API_KEY). Puedes ingresarla en el menú de configuración de la app o guardarla en el archivo .env."
         }), 400
 
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+    except Exception as ie:
+        return jsonify({"success": False, "error": f"Error al inicializar cliente de Gemini: {str(ie)}"}), 500
+
     youtube_url = request.form.get('youtubeUrl', '').strip()
     custom_instructions = request.form.get('instructions', '').strip()
     depth_level = request.form.get('depth', 'completo')  # 'conciso', 'completo', 'exhaustivo'
     
     collected_sources = []
     source_texts = []
-    gemini_video_parts = []
     video_metadata = None
 
     # 1. Process YouTube videos if provided (supports multiple URLs)
@@ -578,152 +655,138 @@ def generate_notes():
         if u and u not in cleaned_urls:
             cleaned_urls.append(u)
 
-    for idx, url in enumerate(cleaned_urls):
-        video_id = extract_youtube_id(url)
-        if not video_id:
-            return jsonify({"success": False, "error": f"El enlace '{url}' no es un video de YouTube válido."}), 400
+    try:
+        # Procesamiento secuencial: cada video sin subtítulos se analiza en su propia llamada individual
+        for idx, url in enumerate(cleaned_urls):
+            video_id = extract_youtube_id(url)
+            if not video_id:
+                return jsonify({"success": False, "error": f"El enlace '{url}' no es un video de YouTube válido."}), 400
+                
+            v_meta = get_youtube_metadata(video_id)
+            transcript_res = get_youtube_transcript(video_id)
             
-        v_meta = get_youtube_metadata(video_id)
-        transcript_res = get_youtube_transcript(video_id)
-        
-        if transcript_res.get("success"):
-            collected_sources.append({
-                "type": "youtube",
-                "title": v_meta["title"],
-                "id": video_id,
-                "thumbnail": v_meta["thumbnail"],
-                "has_captions": True,
-                "order": idx + 1
-            })
-            source_texts.append(
-                f"=== FUENTE VIDEO DE YOUTUBE #{idx+1}: '{v_meta['title']}' ===\n"
-                f"Transcripción con marcas de tiempo:\n{transcript_res['timed_text']}"
-            )
-        else:
-            # Video sin subtítulos: procesamiento audiovisual multimodal directo con Gemini
-            duration_sec = get_youtube_duration_seconds(video_id)
-            fps = 0.1 if duration_sec > 1200 else 0.5
-            
-            try:
-                from google.genai import types
+            if transcript_res.get("success"):
+                collected_sources.append({
+                    "type": "youtube",
+                    "title": v_meta["title"],
+                    "id": video_id,
+                    "thumbnail": v_meta["thumbnail"],
+                    "has_captions": True,
+                    "order": idx + 1
+                })
+                source_texts.append(
+                    f"=== FUENTE VIDEO DE YOUTUBE #{idx+1}: '{v_meta['title']}' ===\n"
+                    f"Transcripción con marcas de tiempo:\n{transcript_res['timed_text']}"
+                )
+            else:
+                # Video sin subtítulos: procesamiento audiovisual multimodal individual
+                duration_sec = get_youtube_duration_seconds(video_id)
+                fps = 0.1 if duration_sec > 1200 else 0.5
+                
                 video_part = types.Part(
                     file_data=types.FileData(file_uri=f"https://www.youtube.com/watch?v={video_id}"),
                     video_metadata=types.VideoMetadata(fps=fps)
                 )
-                gemini_video_parts.append(video_part)
-            except Exception as pe:
-                print(f"Error creando Part para video {video_id}: {pe}")
                 
-            collected_sources.append({
-                "type": "youtube",
-                "title": v_meta["title"],
-                "id": video_id,
-                "thumbnail": v_meta["thumbnail"],
-                "has_captions": False,
-                "mode": "multimodal_vision",
-                "order": idx + 1
-            })
-            source_texts.append(
-                f"=== FUENTE VIDEO DE YOUTUBE #{idx+1} (SIN SUBTÍTULOS - ANÁLISIS MULTIMODAL DIRECTO): '{v_meta['title']}' (ID: {video_id}) ===\n"
-                f"[Video procesado directamente por comprensión audiovisual de Gemini: extrae rigurosamente todo el contenido a partir de la explicación del docente/orador, diapositivas, fórmulas en pizarra y demostraciones visuales]."
-            )
+                extract_prompt = f"""Analiza exhaustivamente este video de YouTube ('{v_meta['title']}').
+Extrae con máximo rigor pedagógico todo su contenido académico y formativo:
+1. Temas, conceptos teóricos y explicaciones brindadas por el docente u orador.
+2. Fórmulas matemáticas, ecuaciones, expresiones o cálculos en pantalla o pizarra (escríbelas siempre en formato LaTeX $...$ o $$...$$).
+3. Diapositivas, diagramas, esquemas o gráficos visuales explicados.
+4. Ejemplos resueltos, demostraciones paso a paso y conclusiones clave.
 
-    # 2. Process uploaded PDF files if provided
-    uploaded_files = request.files.getlist('pdfFiles')
-    for file in uploaded_files:
-        if file and file.filename and file.filename.lower().endswith('.pdf'):
-            safe_name = secure_filename(file.filename)
-            save_path = UPLOAD_FOLDER / safe_name
-            file.save(save_path)
-            
-            pdf_res = extract_pdf_text(str(save_path))
-            if pdf_res["success"]:
+Escribe un desarrollo analítico muy detallado, exhaustivo y estructurado cronológicamente con todo el contenido del video."""
+                
+                print(f"[Proceso Secuencial] Analizando video #{idx+1} ('{v_meta['title']}') individualmente con Gemini...")
+                video_summary = call_gemini_with_fallback(
+                    client=client,
+                    contents=[video_part, extract_prompt]
+                )
+                
+                # Liberar memoria del video inmediatamente
+                del video_part
+                import gc
+                gc.collect()
+
                 collected_sources.append({
-                    "type": "pdf",
-                    "filename": safe_name,
-                    "pages": pdf_res["pages"]
+                    "type": "youtube",
+                    "title": v_meta["title"],
+                    "id": video_id,
+                    "thumbnail": v_meta["thumbnail"],
+                    "has_captions": False,
+                    "mode": "multimodal_vision",
+                    "order": idx + 1
                 })
                 source_texts.append(
-                    f"=== FUENTE DOCUMENTO PDF '{safe_name}' ({pdf_res['pages']} páginas) ===\n"
-                    f"{pdf_res['content']}"
+                    f"=== FUENTE VIDEO DE YOUTUBE #{idx+1} (ANÁLISIS MULTIMODAL): '{v_meta['title']}' (ID: {video_id}) ===\n"
+                    f"{video_summary}"
                 )
-            else:
-                return jsonify({"success": False, "error": pdf_res["error"]}), 400
+                
+                # Pausa breve entre videos consecutivos para respetar los límites de tasa (RPM)
+                if idx < len(cleaned_urls) - 1:
+                    import time
+                    time.sleep(1)
 
-    if not source_texts and not gemini_video_parts:
-        return jsonify({"success": False, "error": "Debes proporcionar al menos un enlace de YouTube o un archivo PDF."}), 400
+        # 2. Process uploaded PDF files if provided
+        uploaded_files = request.files.getlist('pdfFiles')
+        for file in uploaded_files:
+            if file and file.filename and file.filename.lower().endswith('.pdf'):
+                safe_name = secure_filename(file.filename)
+                save_path = UPLOAD_FOLDER / safe_name
+                file.save(save_path)
+                
+                pdf_res = extract_pdf_text(str(save_path))
+                try:
+                    if save_path.exists():
+                        save_path.unlink()
+                except Exception:
+                    pass
 
-    # Assemble User Prompt
-    depth_instructions = {
-        "conciso": "Nivel de profundidad: RESUMEN CONCISO. Enfócate en las ideas centrales, esquemas y conceptos primordiales.",
-        "completo": "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO. Desarrolla todos los temas con rigor, explicaciones paso a paso, ejemplos y fundamentos.",
-        "exhaustivo": "Nivel de profundidad: GUÍA EXHAUSTIVA DE ESTUDIO. Máximo nivel de detalle pedagógico, desglosando cada subtema, fórmula, demostración y casos prácticos."
-    }.get(depth_level, "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO.")
+                if pdf_res["success"]:
+                    collected_sources.append({
+                        "type": "pdf",
+                        "filename": safe_name,
+                        "pages": pdf_res["pages"]
+                    })
+                    source_texts.append(
+                        f"=== FUENTE DOCUMENTO PDF '{safe_name}' ({pdf_res['pages']} páginas) ===\n"
+                        f"{pdf_res['content']}"
+                    )
+                else:
+                    return jsonify({"success": False, "error": pdf_res["error"]}), 400
 
-    multi_source_hint = f"\nNOTA PEDAGÓGICA: Has recibido {len(collected_sources)} fuentes distintas (pueden ser partes consecutivas de una clase o serie, o documentos complementarios). Sintetiza y unifica todo el material en un único Apunte Maestro armónico, integrando ordenadamente los contenidos de todas las partes sin redundancias.\n" if len(collected_sources) > 1 else ""
+        if not source_texts:
+            return jsonify({"success": False, "error": "Debes proporcionar al menos un enlace de YouTube o un archivo PDF."}), 400
 
-    user_prompt = f"""
+        # Assemble User Prompt for Final Synthesis (Lightweight Text-Only Call)
+        depth_instructions = {
+            "conciso": "Nivel de profundidad: RESUMEN CONCISO. Enfócate en las ideas centrales, esquemas y conceptos primordiales.",
+            "completo": "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO. Desarrolla todos los temas con rigor, explicaciones paso a paso, ejemplos y fundamentos.",
+            "exhaustivo": "Nivel de profundidad: GUÍA EXHAUSTIVA DE ESTUDIO. Máximo nivel de detalle pedagógico, desglosando cada subtema, fórmula, demostración y casos prácticos."
+        }.get(depth_level, "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO.")
+
+        multi_source_hint = f"\nNOTA PEDAGÓGICA: Has recibido {len(collected_sources)} fuentes distintas (pueden ser partes consecutivas de una clase o serie, o documentos complementarios). Sintetiza y unifica todo el material en un único Apunte Maestro armónico, integrando ordenadamente los contenidos de todas las partes sin redundancias.\n" if len(collected_sources) > 1 else ""
+
+        user_prompt = f"""
 {depth_instructions}
 {multi_source_hint}
 {f"INSTRUCCIONES Y ENFOQUE ESPECIAL DEL ESTUDIANTE: {custom_instructions}" if custom_instructions else ""}
 
-A continuación tienes el material fuente para analizar y sintetizar:
+A continuación tienes el material fuente analizado para sintetizar:
 
 {"\n\n---\n\n".join(source_texts)}
 
 Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
 """
 
-    # Call Gemini API using official google-genai SDK
-    try:
-        from google import genai
-        from google.genai import types
-        
-        client = genai.Client(api_key=api_key)
-        
-        config = types.GenerateContentConfig(
+        print("[Proceso Síntesis] Generando Apunte Maestro final en formato JSON...")
+        raw_response = call_gemini_with_fallback(
+            client=client,
+            contents=user_prompt,
             system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.3,
             response_mime_type="application/json"
         )
 
-        import time
-        # Principal: gemini-3.7-flash, Fallback: gemini-3.6-flash
-        models_to_try = ["gemini-3.7-flash", "gemini-3.6-flash"]
-        response = None
-        last_error = None
-        
-        contents_payload = gemini_video_parts + [types.Part.from_text(text=user_prompt)] if gemini_video_parts else user_prompt
-
-        for model_name in models_to_try:
-            for attempt in range(2):
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents_payload,
-                        config=config
-                    )
-                    if response and response.text:
-                        break
-                except Exception as merr:
-                    last_error = merr
-                    err_str = str(merr)
-                    try:
-                        print(f"Model {model_name} attempt {attempt+1} failed: {err_str[:120]}")
-                    except Exception:
-                        pass
-                    if "503" in err_str or "high demand" in err_str or "UNAVAILABLE" in err_str:
-                        time.sleep(2)
-                    else:
-                        break
-            if response and response.text:
-                break
-                
-        if not response or not response.text:
-            raise last_error or Exception("No se obtuvo respuesta de ninguno de los modelos de Gemini.")
-
-        raw_response = response.text.strip()
-        
         # Clean potential markdown wrapping if present
         if raw_response.startswith("```json"):
             raw_response = raw_response[7:]
@@ -754,15 +817,26 @@ Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
             "data": result_data
         })
 
+    except GeminiQuotaExceeded as qe:
+        return jsonify({
+            "success": False,
+            "error": "Se alcanzó el límite de uso gratuito de Gemini por ahora. Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
+        }), 429
+
     except Exception as e:
         safe_msg = str(e)
+        if is_quota_error(e):
+            return jsonify({
+                "success": False,
+                "error": "Se alcanzó el límite de uso gratuito de Gemini por ahora. Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
+            }), 429
         try:
             print(f"Error calling Gemini API: {safe_msg}")
         except Exception:
             pass
         return jsonify({
             "success": False,
-            "error": f"Error en la llamada a la IA de Gemini: {safe_msg}"
+            "error": f"Error al generar el apunte con Gemini: {safe_msg}"
         }), 500
 
 if __name__ == '__main__':

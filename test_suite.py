@@ -66,8 +66,14 @@ class TestApuntesIA(unittest.TestCase):
         }
         
         mock_instance = mock_client_class.return_value
-        fake_response = MagicMock()
-        fake_response.text = json.dumps({
+        
+        # Step 1: Video extraction call returns text notes
+        resp_extract = MagicMock()
+        resp_extract.text = "Desarrollo detallado extraido del video multimodal."
+        
+        # Step 2: Final synthesis call returns structured JSON
+        resp_synthesis = MagicMock()
+        resp_synthesis.text = json.dumps({
             "title": "Video Sin Subtitulos",
             "topic_overview": "Analizado directamente por visión multimodal",
             "estimated_study_time": "15 min",
@@ -79,7 +85,7 @@ class TestApuntesIA(unittest.TestCase):
             "exam_tips": [],
             "glossary": []
         })
-        mock_instance.models.generate_content.return_value = fake_response
+        mock_instance.models.generate_content.side_effect = [resp_extract, resp_synthesis]
         
         res = self.client.post('/api/generate-notes', data={
             'youtubeUrl': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
@@ -95,14 +101,23 @@ class TestApuntesIA(unittest.TestCase):
         self.assertFalse(sources[0]['has_captions'])
         self.assertEqual(sources[0]['mode'], 'multimodal_vision')
         
-        # Verify generate_content received multimodal FileData Part
-        call_kwargs = mock_instance.models.generate_content.call_args[1]
-        contents = call_kwargs['contents']
-        self.assertIsInstance(contents, list)
-        self.assertEqual(len(contents), 2)
-        video_part = contents[0]
+        # Verify 2 calls: 1 individual video extraction + 1 final synthesis
+        self.assertEqual(mock_instance.models.generate_content.call_count, 2)
+        
+        # Call 1: check that video FileData Part was passed
+        first_call = mock_instance.models.generate_content.call_args_list[0][1]
+        first_contents = first_call['contents']
+        self.assertIsInstance(first_contents, list)
+        self.assertEqual(len(first_contents), 2)
+        video_part = first_contents[0]
         self.assertTrue(hasattr(video_part, 'file_data'))
         self.assertIn('dQw4w9WgXcQ', video_part.file_data.file_uri)
+        
+        # Call 2: final synthesis receives text prompt only
+        second_call = mock_instance.models.generate_content.call_args_list[1][1]
+        second_contents = second_call['contents']
+        self.assertIsInstance(second_contents, str)
+        self.assertIn("Desarrollo detallado extraido del video multimodal", second_contents)
 
     @patch('app.get_youtube_transcript')
     @patch('google.genai.Client')
@@ -142,11 +157,91 @@ class TestApuntesIA(unittest.TestCase):
         self.assertEqual(len(sources), 1)
         self.assertTrue(sources[0]['has_captions'])
         
-        # Verify contents was passed as text prompt string with the transcript
+        # Verify only 1 call is made (synthesis) because transcript is already text
+        self.assertEqual(mock_instance.models.generate_content.call_count, 1)
         call_kwargs = mock_instance.models.generate_content.call_args[1]
         contents = call_kwargs['contents']
         self.assertIsInstance(contents, str)
         self.assertIn("Hola bienvenidos a la clase", contents)
+
+    @patch('app.get_youtube_transcript')
+    @patch('google.genai.Client')
+    def test_quota_error_429_returns_clear_message(self, mock_client_class, mock_transcript):
+        mock_transcript.return_value = {
+            "success": True,
+            "timed_text": "[00:01] Clase de prueba",
+            "full_text": "Clase de prueba",
+            "duration_seconds": 30
+        }
+        mock_instance = mock_client_class.return_value
+        mock_instance.models.generate_content.side_effect = Exception(
+            "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota...'}}"
+        )
+        
+        res = self.client.post('/api/generate-notes', data={
+            'youtubeUrl': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        }, headers={'X-Gemini-Api-Key': 'fake-test-key-12345'})
+        
+        self.assertEqual(res.status_code, 429)
+        data = json.loads(res.data)
+        self.assertFalse(data['success'])
+        self.assertIn("límite de uso gratuito de Gemini", data['error'])
+
+    @patch('app.get_youtube_transcript')
+    @patch('google.genai.Client')
+    def test_multiple_videos_without_subtitles_processed_sequentially(self, mock_client_class, mock_transcript):
+        # Both videos have no subtitles
+        mock_transcript.return_value = {"success": False, "error": "No subtitles"}
+        
+        mock_instance = mock_client_class.return_value
+        
+        v1_extract = MagicMock(text="Apuntes Video 1")
+        v2_extract = MagicMock(text="Apuntes Video 2")
+        final_synth = MagicMock(text=json.dumps({
+            "title": "Apunte Maestro Combinado",
+            "topic_overview": "Sintesis de dos videos",
+            "estimated_study_time": "30 min",
+            "key_takeaways": [],
+            "developments": [],
+            "general_diagram": {"title": "", "mermaid_code": ""},
+            "flashcards": [],
+            "quiz": [],
+            "exam_tips": [],
+            "glossary": []
+        }))
+        
+        mock_instance.models.generate_content.side_effect = [v1_extract, v2_extract, final_synth]
+        
+        res = self.client.post('/api/generate-notes', data={
+            'youtubeUrls': [
+                'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+                'https://www.youtube.com/watch?v=9bZkp7q19f0'
+            ]
+        }, headers={'X-Gemini-Api-Key': 'fake-test-key-12345'})
+        
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data['success'])
+        
+        # 3 calls: Video 1 alone, Video 2 alone, Synthesis call
+        self.assertEqual(mock_instance.models.generate_content.call_count, 3)
+        
+        # Verify first call had only 1 video part
+        c1 = mock_instance.models.generate_content.call_args_list[0][1]['contents']
+        self.assertEqual(len(c1), 2)
+        self.assertIn('dQw4w9WgXcQ', c1[0].file_data.file_uri)
+        
+        # Verify second call had only 1 video part
+        c2 = mock_instance.models.generate_content.call_args_list[1][1]['contents']
+        self.assertEqual(len(c2), 2)
+        self.assertIn('9bZkp7q19f0', c2[0].file_data.file_uri)
+        
+        # Verify third call is pure text synthesis
+        c3 = mock_instance.models.generate_content.call_args_list[2][1]['contents']
+        self.assertIsInstance(c3, str)
+        self.assertIn("Apuntes Video 1", c3)
+        self.assertIn("Apuntes Video 2", c3)
+
 
 if __name__ == '__main__':
     unittest.main()
