@@ -2,19 +2,13 @@ import sys
 import os
 import re
 import json
-import time
-import logging
-import tempfile
-import base64
-import html
-import http.cookiejar
 import requests
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, Response, stream_with_context
+from flask import Flask, render_template, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 
-# Ensure UTF-8 output encoding on Windows console
+# Ensure UTF-8 output encoding on Windows console to avoid charmap UnicodeEncodeErrors
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -26,57 +20,73 @@ if hasattr(sys.stdout, 'reconfigure'):
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-import pypdf
-from google import genai
-from google.genai import types
-
 app = Flask(__name__)
-logger = logging.getLogger("apuntes_ia")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-class GeminiConfig:
-    """Configuration for Google Gemini AI models and fallback hierarchy.
-    Primary: gemini-3.7-flash
-    Fallback: gemini-3.6-flash (recommended by Google to replace deprecated 2.5 models)
-    """
-    PRIMARY_MODEL = "gemini-3.7-flash"
-    FALLBACK_MODEL = "gemini-3.6-flash"
-    MODELS = [PRIMARY_MODEL, FALLBACK_MODEL]
-
-GEMINI_MODELS = GeminiConfig.MODELS
-
-def get_git_commit_hash():
-    """Retrieve current commit hash for deployment verification."""
-    render_commit = os.environ.get('RENDER_GIT_COMMIT')
-    if render_commit:
-        return render_commit[:7]
-    try:
-        import subprocess
-        out = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], stderr=subprocess.DEVNULL)
-        return out.decode('utf-8').strip()
-    except Exception:
-        pass
-    return "unknown"
-
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
 UPLOAD_FOLDER = Path(__file__).parent / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 app.config['UPLOAD_FOLDER'] = str(UPLOAD_FOLDER)
 
-@app.errorhandler(500)
-def handle_500(err):
-    """Ensure Flask never returns raw HTML 500 pages."""
-    return jsonify({
-        "success": False,
-        "error": "Ocurrió un error inesperado en el servidor al procesar la solicitud."
-    }), 500
+def robust_parse_json(text):
+    """Robustly parse JSON strings from Gemini, handling unescaped LaTeX backslashes."""
+    if not text:
+        raise ValueError("Respuesta vacía de la IA.")
+        
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    if text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
 
-@app.errorhandler(404)
-def handle_404(err):
-    return jsonify({
-        "success": False,
-        "error": "Recurso no encontrado."
-    }), 404
+    start = text.find('{')
+    end = text.rfind('}')
+    if start != -1 and end != -1:
+        text = text[start:end+1]
+
+    # Try standard strict=False first
+    try:
+        return json.loads(text, strict=False)
+    except Exception:
+        pass
+
+    # Regex repair for unescaped LaTeX macros (\frac, \Delta, \sigma, etc.)
+    def fix_escapes(match):
+        following = match.group(1)
+        if following in ['"', '\\', '/']:
+            return match.group(0)
+        if following in ['n', 't', 'r', 'b']:
+            after = match.group(2)
+            if after and after.isalpha():
+                return r'\\' + following + after
+            return match.group(0)
+        return r'\\' + match.group(0)[1:]
+
+    fixed = re.sub(r'\\(.)([a-zA-Z]?)', fix_escapes, text)
+    try:
+        return json.loads(fixed, strict=False)
+    except Exception:
+        pass
+
+    # Fallback: escape all backslashes that are not followed by " or \
+    fixed2 = re.sub(r'\\(?![/"\\])', r'\\\\', text)
+    return json.loads(fixed2, strict=False)
+
+def get_api_key(request_data=None):
+    """Retrieve Gemini API key from request, environment, or .env file."""
+    if request_data and request_data.get('apiKey'):
+        return request_data.get('apiKey').strip()
+    
+    header_key = request.headers.get('X-Gemini-Api-Key')
+    if header_key:
+        return header_key.strip()
+        
+    env_key = os.environ.get('GEMINI_API_KEY')
+    if env_key:
+        return env_key.strip()
+        
+    return None
 
 def extract_youtube_id(url_or_id):
     """Extract YouTube video ID from various URL patterns or direct ID."""
@@ -124,612 +134,212 @@ def get_youtube_metadata(video_id):
         "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
     }
 
-import yt_dlp
-
-def get_youtube_cookiefile():
-    """Retrieve or materialize YouTube cookies from environment variable or file."""
-    cookie_path = os.environ.get('YOUTUBE_COOKIE_PATH', 'cookies.txt')
-    if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 10:
-        return cookie_path
-
-    b64_cookies = os.environ.get('YOUTUBE_COOKIES_BASE64')
-    if b64_cookies:
-        try:
-            decoded = base64.b64decode(b64_cookies.strip()).decode('utf-8', errors='ignore')
-            tmp_path = os.path.join(tempfile.gettempdir(), 'youtube_cookies.txt')
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                f.write(decoded)
-            return tmp_path
-        except Exception as e:
-            logger.warning(f"Error decoding YOUTUBE_COOKIES_BASE64: {e}")
-
-    raw_cookies = os.environ.get('YOUTUBE_COOKIES')
-    if raw_cookies and len(raw_cookies.strip()) > 20:
-        tmp_path = os.path.join(tempfile.gettempdir(), 'youtube_cookies.txt')
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            f.write(raw_cookies.strip())
-        return tmp_path
-
-    return None
-
-def fetch_and_parse_timedtext(url):
-    """Fetch YouTube timedtext XML (srv1 or srv3) and parse into snippets and full text."""
-    try:
-        r = requests.get(url, timeout=12)
-        if r.status_code != 200 or not r.text or not r.text.strip():
-            return None
-        xml_text = r.text
-        snippets = []
-        
-        # 1. Try format 1: <text start="12.34" dur="2.5">Hello</text>
-        re_text = re.compile(r'<text\b[^>]*\bstart="([\d\.]+)"[^>]*>(.*?)</text>', re.DOTALL)
-        matches = list(re_text.finditer(xml_text))
-        if matches:
-            for m in matches:
-                start_sec = float(m.group(1))
-                txt = html.unescape(re.sub(r'<[^>]+>', '', m.group(2))).strip()
-                if txt:
-                    snippets.append((start_sec, txt))
-        else:
-            # 2. Try format 3: <p t="12340" d="2500"><s>Hello</s></p>
-            re_p = re.compile(r'<p\b[^>]*\bt="(\d+)"[^>]*>(.*?)</p>', re.DOTALL)
-            re_s = re.compile(r'<s\b[^>]*>(.*?)</s>', re.DOTALL)
-            for m in re_p.finditer(xml_text):
-                start_sec = int(m.group(1)) / 1000.0
-                inner = m.group(2)
-                s_matches = re_s.findall(inner)
-                if s_matches:
-                    seg = ''.join(s_matches)
-                else:
-                    seg = re.sub(r'<[^>]+>', '', inner)
-                txt = html.unescape(seg).strip()
-                if txt:
-                    snippets.append((start_sec, txt))
-
-        if not snippets:
-            return None
-
-        full_text = ' '.join([s[1] for s in snippets]).strip()
-        timed_snippets = []
-        for s in snippets:
-            mm = int(s[0] // 60)
-            ss = int(s[0] % 60)
-            timed_snippets.append(f"[{mm:02d}:{ss:02d}] {s[1]}")
-        timed_text = '\n'.join(timed_snippets)
-
-        return {
-            "success": True,
-            "language": "es",
-            "full_text": full_text,
-            "timed_text": timed_text,
-            "snippets_count": len(snippets)
-        }
-    except Exception as e:
-        logger.warning(f"Error fetching/parsing timedtext XML: {e}")
-        return None
-
-def get_innertube_android_data(video_id):
-    """Query official YouTube Android Player API.
-    Bypasses datacenter web bot challenges, runs in ~300ms, and provides full signed caption tracks and audio URLs.
-    """
-    try:
-        url = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-        payload = {
-            "context": {
-                "client": {
-                    "clientName": "ANDROID",
-                    "clientVersion": "20.10.38",
-                    "androidSdkVersion": 34,
-                    "hl": "es",
-                    "gl": "ES",
-                    "utcOffsetMinutes": 0
-                }
-            },
-            "videoId": video_id
-        }
-        headers = {
-            "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
-            "Content-Type": "application/json"
-        }
-
-        cookie_file = get_youtube_cookiefile()
-        cookies_dict = {}
-        if cookie_file and os.path.exists(cookie_file):
-            try:
-                cj = http.cookiejar.MozillaCookieJar(cookie_file)
-                cj.load(ignore_discard=True, ignore_expires=True)
-                cookies_dict = {c.name: c.value for c in cj}
-            except Exception:
-                pass
-
-        resp = requests.post(url, json=payload, headers=headers, cookies=cookies_dict, timeout=10)
-        if resp.status_code != 200:
-            return None, f"HTTP {resp.status_code}"
-        
-        data = resp.json()
-        playability = data.get("playabilityStatus", {}).get("status")
-        if playability != "OK":
-            return None, f"Playability: {playability}"
-
-        raw_tracks = data.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
-        caption_tracks = []
-        for t in raw_tracks:
-            name = t.get("name", {}).get("runs", [{}])[0].get("text", "Subtítulos")
-            base_url = t.get("baseUrl", "")
-            if "fmt=" not in base_url:
-                base_url += "&fmt=srv1"
-            caption_tracks.append({
-                "name": name,
-                "language_code": t.get("languageCode", "es"),
-                "base_url": base_url,
-                "is_auto": t.get("kind") == "asr" or "auto" in name.lower()
-            })
-
-        # Prefer Spanish first, then English
-        caption_tracks.sort(key=lambda x: 0 if x["language_code"].startswith("es") else (1 if x["language_code"].startswith("en") else 2))
-
-        sd = data.get("streamingData", {})
-        prog_formats = sd.get("formats", [])
-        adaptive_formats = sd.get("adaptiveFormats", [])
-        
-        # Prefer progressive MP4 format (itag 18 / 22) because YouTube CDN allows continuous streaming
-        # without token 403 errors or strict byte-range limits on datacenter servers.
-        selected_audio = next((f for f in prog_formats if f.get("itag") in [18, 22] and f.get("url")), None)
-        if not selected_audio:
-            audio_formats = [f for f in adaptive_formats if f.get("mimeType", "").startswith("audio/") and f.get("url")]
-            if audio_formats:
-                selected_audio = next((f for f in audio_formats if f.get("itag") in [140, 139, 251, 250]), audio_formats[0])
-
-        details = data.get("videoDetails", {})
-        title = details.get("title", f"Video {video_id}")
-        author = details.get("author", "YouTube")
-        duration_sec = 0
-        try:
-            duration_sec = int(details.get("lengthSeconds", 0))
-        except Exception:
-            pass
-
-        return {
-            "title": title,
-            "author": author,
-            "thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-            "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-            "duration_seconds": duration_sec,
-            "caption_tracks": caption_tracks,
-            "has_captions": len(caption_tracks) > 0,
-            "has_audio": selected_audio is not None,
-            "audio_url": selected_audio.get("url") if selected_audio else None,
-            "audio_ext": "webm" if (selected_audio and "webm" in selected_audio.get("mimeType", "")) else "m4a",
-            "audio_headers": {
-                "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)"
-            }
-        }, "ok"
-    except Exception as e:
-        logger.warning(f"Innertube Android API failed for {video_id}: {e}")
-        return None, str(e)
-
-def get_youtube_transcript_api(video_id):
-    """Retrieve subtitles directly via Innertube Android API or fallback to youtube-transcript-api."""
-    # 1. Primary: Fast, datacenter-immune Innertube Android timedtext
-    try:
-        idata, _ = get_innertube_android_data(video_id)
-        if idata and idata.get("caption_tracks"):
-            for track in idata["caption_tracks"]:
-                if track.get("base_url"):
-                    parsed = fetch_and_parse_timedtext(track["base_url"])
-                    if parsed and parsed.get("full_text"):
-                        parsed["language"] = track.get("language_code", "es")
-                        return parsed
-    except Exception as ie:
-        logger.warning(f"Innertube timedtext extraction failed for {video_id}: {ie}")
-
-    # 2. Secondary fallback: youtube-transcript-api
+def get_youtube_transcript(video_id):
+    """Extract transcript with timestamps from YouTube supporting modern and legacy APIs."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept-Language': 'es-419,es;q=0.9,en;q=0.8'
-        })
-        cookie_file = get_youtube_cookiefile()
-        if cookie_file and os.path.exists(cookie_file):
-            try:
-                cj = http.cookiejar.MozillaCookieJar(cookie_file)
-                cj.load(ignore_discard=True, ignore_expires=True)
-                session.cookies = cj
-            except Exception as ce:
-                logger.warning(f"Could not load cookies into requests session: {ce}")
+        raw_data = None
 
-        snippets = []
-        lang = 'es'
-        if hasattr(YouTubeTranscriptApi, 'list'):
-            api = YouTubeTranscriptApi(http_client=session)
-            tl = api.list(video_id)
-            try:
-                transcript_obj = tl.find_transcript(['es', 'es-419', 'es-ES', 'en', 'en-US'])
-            except Exception:
-                transcript_obj = next(iter(tl))
-            lang = getattr(transcript_obj, 'language_code', 'es')
-            fetched = transcript_obj.fetch()
-            snippets = [{'text': s.text, 'start': s.start, 'duration': s.duration} for s in fetched.snippets]
-        elif hasattr(YouTubeTranscriptApi, 'get_transcript'):
-            snippets = YouTubeTranscriptApi.get_transcript(video_id, languages=['es', 'es-419', 'en', 'en-US'])
-        
-        if not snippets:
-            return None
-
-        full_text = ' '.join([s['text'] for s in snippets if s.get('text')]).strip()
-        timed_snippets = []
-        for s in snippets:
-            text = s.get('text', '').strip()
-            if text:
-                mm = int(s.get('start', 0) // 60)
-                ss = int(s.get('start', 0) % 60)
-                timed_snippets.append(f"[{mm:02d}:{ss:02d}] {text}")
-        timed_text = '\n'.join(timed_snippets)
-
-        return {
-            "success": True,
-            "language": lang,
-            "full_text": full_text,
-            "timed_text": timed_text,
-            "snippets_count": len(snippets)
-        }
-    except Exception as e:
-        logger.warning(f"youtube-transcript-api check failed for {video_id}: {e}")
-        return None
-
-def get_youtube_video_data(video_id):
-    """Retrieve video metadata, subtitle tracks, and audio streaming info with progressive fallbacks:
-    1. Direct Innertube Android API (fastest, unblocked on datacenters)
-    2. yt-dlp with android player client
-    3. youtube-transcript-api
-    4. oEmbed metadata
-    """
-    innertube_err = None
-    ytdlp_err = None
-    transcript_err = None
-
-    # 1. Primary: Innertube Android API
-    vdata, err = get_innertube_android_data(video_id)
-    if vdata and (vdata.get("has_captions") or vdata.get("has_audio")):
-        return vdata, {"status": "ok_via_innertube_android"}
-    innertube_err = err
-
-    # 2. Secondary fallback: yt-dlp with android player client only
-    cookie_file = get_youtube_cookiefile()
-    ydl_opts = {
-        'skip_download': True,
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': False,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android'],
-                'player_skip': ['webpage', 'configs']
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
-            'Accept-Language': 'es-419,es;q=0.9,en;q=0.8'
-        }
-    }
-    if cookie_file:
-        ydl_opts['cookiefile'] = cookie_file
-
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            subs = info.get('subtitles', {})
-            auto_subs = info.get('automatic_captions', {})
-            caption_tracks = []
+        # 1. Try modern v1.x API (instance based)
+        try:
+            api = YouTubeTranscriptApi()
+            transcript_list = api.list(video_id)
+            target_transcript = None
             
-            for lang_code in ['es', 'es-419', 'es-ES', 'es-US', 'en', 'en-US']:
-                track_list = subs.get(lang_code) or auto_subs.get(lang_code)
-                if track_list:
-                    pref = next((s['url'] for s in track_list if s.get('ext') == 'srv1'), None)
-                    if not pref:
-                        pref = next((s['url'] for s in track_list if s.get('ext') in ['srv3', 'vtt']), track_list[0]['url'])
-                    caption_tracks.append({
-                        "name": f"Español ({lang_code})" if lang_code.startswith('es') else f"Inglés ({lang_code})",
-                        "language_code": lang_code,
-                        "base_url": pref,
-                        "is_auto": lang_code in auto_subs and lang_code not in subs
-                    })
-            
-            if not caption_tracks:
-                for lang_code, track_list in list(subs.items())[:3] + list(auto_subs.items())[:3]:
-                    pref = next((s['url'] for s in track_list if s.get('ext') in ['srv1', 'srv3']), track_list[0]['url'])
-                    caption_tracks.append({
-                        "name": f"Subtítulos ({lang_code})",
-                        "language_code": lang_code,
-                        "base_url": pref,
-                        "is_auto": lang_code in auto_subs and lang_code not in subs
-                    })
-
-            formats = info.get('formats', [])
-            audio_formats = [f for f in formats if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('url')]
-            selected_audio = None
-            if audio_formats:
-                selected_audio = next((f for f in audio_formats if f.get('format_id') in ['139', '250', '249']), audio_formats[0])
-            elif formats:
-                formats_with_audio = [f for f in formats if f.get('acodec') != 'none' and f.get('url')]
-                if formats_with_audio:
-                    selected_audio = formats_with_audio[0]
-
-            return {
-                "title": info.get('title', f"Video {video_id}"),
-                "author": info.get('uploader', 'YouTube'),
-                "thumbnail": info.get('thumbnail', f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
-                "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-                "duration_seconds": int(info.get('duration', 0)),
-                "caption_tracks": caption_tracks,
-                "has_captions": len(caption_tracks) > 0,
-                "has_audio": selected_audio is not None,
-                "audio_url": selected_audio.get('url') if selected_audio else None,
-                "audio_headers": selected_audio.get('http_headers', {}) if selected_audio else {},
-                "audio_format_id": selected_audio.get('format_id') if selected_audio else None,
-                "audio_ext": selected_audio.get('ext', 'm4a') if selected_audio else 'm4a'
-            }, {"status": "ok_via_yt_dlp"}
-    except Exception as e:
-        ytdlp_err = str(e)
-        logger.warning(f"yt-dlp extract failed for {video_id}: {e}")
-
-    # 3. Tertiary fallback: youtube-transcript-api
-    t_data = get_youtube_transcript_api(video_id)
-    if t_data and t_data.get("full_text"):
-        meta = get_youtube_metadata(video_id)
-        return {
-            "title": meta.get("title", f"Video {video_id}"),
-            "author": meta.get("author", "YouTube"),
-            "thumbnail": meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
-            "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-            "duration_seconds": 0,
-            "caption_tracks": [{
-                "name": f"Transcripción Directa ({t_data.get('language', 'es')})",
-                "language_code": t_data.get('language', 'es'),
-                "base_url": f"/api/youtube-transcript?videoId={video_id}",
-                "is_auto": False,
-                "is_api": True
-            }],
-            "has_captions": True,
-            "has_audio": False,
-            "audio_url": None,
-            "audio_headers": {},
-            "audio_format_id": None,
-            "audio_ext": "m4a"
-        }, {"status": "ok_via_transcript_api"}
-    transcript_err = "No transcript found via Innertube or youtube-transcript-api"
-
-    # 4. Final fallback: oEmbed
-    meta = get_youtube_metadata(video_id)
-    return {
-        "title": meta.get("title", f"Video {video_id}"),
-        "author": meta.get("author", "YouTube"),
-        "thumbnail": meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
-        "fallback_thumbnail": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-        "duration_seconds": 0,
-        "caption_tracks": [],
-        "has_captions": False,
-        "has_audio": False,
-        "audio_url": None,
-        "audio_headers": {},
-        "audio_format_id": None,
-        "audio_ext": "m4a"
-    }, {
-        "status": "metadata_only",
-        "innertube_err": innertube_err,
-        "ytdlp_err": ytdlp_err,
-        "transcript_err": transcript_err
-    }
-
-def get_youtube_duration_seconds(video_id):
-    """Retrieve video duration in seconds via Innertube Android API, yt-dlp, or fallback."""
-    try:
-        idata, _ = get_innertube_android_data(video_id)
-        if idata and idata.get("duration_seconds") and idata["duration_seconds"] > 0:
-            return idata["duration_seconds"]
-    except Exception:
-        pass
-
-    try:
-        ydl_opts = {
-            'skip_download': True,
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-            if info and info.get('duration'):
-                return int(info['duration'])
-    except Exception:
-        pass
-
-    return 3600  # Default to 1 hour if unknown
-
-def get_youtube_caption_tracks(video_id):
-    """Retrieve available subtitle tracks and signed baseUrls."""
-    data, debug_info = get_youtube_video_data(video_id)
-    if data and data.get("caption_tracks"):
-        return data["caption_tracks"], debug_info
-    return [], debug_info
-
-
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/api/status', methods=['GET'])
-def check_status():
-    has_env_key = bool(os.environ.get('GEMINI_API_KEY'))
-    return jsonify({
-        "status": "ready",
-        "engine": "Google Gemini AI (Direct SDK)",
-        "commit": get_git_commit_hash(),
-        "default_model": GeminiConfig.PRIMARY_MODEL,
-        "fallback_model": GeminiConfig.FALLBACK_MODEL,
-        "models": GeminiConfig.MODELS,
-        "has_env_key": has_env_key,
-        "version": "2.1.0",
-        "message": "Servicio activo. Potenciado exclusivamente por Google Gemini AI para uso personal y privado."
-    })
-
-@app.route('/api/health-gemini', methods=['GET', 'POST'])
-def health_gemini():
-    api_key = extract_gemini_api_key(request)
-    if not api_key:
-        return jsonify({
-            "success": False,
-            "configured": False,
-            "error": "No se encontró clave de API de Gemini."
-        }), 200
-    
-    return jsonify({
-        "success": True,
-        "configured": True,
-        "valid_format": len(api_key) >= 20,
-        "default_model": GeminiConfig.PRIMARY_MODEL,
-        "fallback_model": GeminiConfig.FALLBACK_MODEL,
-        "models": GeminiConfig.MODELS,
-        "commit": get_git_commit_hash()
-    })
-
-@app.route('/api/youtube-preview', methods=['POST'])
-def youtube_preview():
-    data = request.get_json(silent=True) or request.form or {}
-    url = data.get('url', '')
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        return jsonify({"success": False, "error": "Enlace de YouTube no válido"}), 400
-        
-    vdata, debug_info = get_youtube_video_data(video_id)
-    vdata["video_id"] = video_id
-    vdata["success"] = True
-    vdata["debug"] = debug_info
-    return jsonify(vdata)
-
-@app.route('/api/youtube-tracks', methods=['GET', 'POST'])
-def youtube_tracks():
-    """Lightweight endpoint returning available caption track URLs for client-side download."""
-    url = ''
-    if request.method == 'POST':
-        data = request.get_json(silent=True) or request.form or {}
-        url = data.get('url') or data.get('videoId') or ''
-    else:
-        url = request.args.get('url') or request.args.get('videoId') or ''
-        
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        return jsonify({"success": False, "error": "Enlace o ID de YouTube no válido."}), 400
-        
-    vdata, debug_info = get_youtube_video_data(video_id)
-    return jsonify({
-        "success": True,
-        "video_id": video_id,
-        "title": vdata.get("title", f"Video {video_id}"),
-        "thumbnail": vdata.get("thumbnail", ""),
-        "has_captions": vdata.get("has_captions", False),
-        "has_audio": vdata.get("has_audio", False),
-        "caption_tracks": vdata.get("caption_tracks", []),
-        "debug": debug_info
-    })
-
-@app.route('/api/youtube-transcript', methods=['GET', 'POST'])
-def youtube_transcript():
-    """Retrieve full transcript text of a YouTube video via youtube-transcript-api without downloading media."""
-    url = ''
-    if request.method == 'POST':
-        data = request.get_json(silent=True) or request.form or {}
-        url = data.get('url') or data.get('videoId') or ''
-    else:
-        url = request.args.get('url') or request.args.get('videoId') or ''
-        
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        return jsonify({"success": False, "error": "ID o enlace de video no válido."}), 400
-
-    t_data = get_youtube_transcript_api(video_id)
-    if t_data and t_data.get("full_text"):
-        return jsonify({
-            "success": True,
-            "video_id": video_id,
-            "full_text": t_data["full_text"],
-            "timed_text": t_data["timed_text"],
-            "language": t_data.get("language", "es"),
-            "snippets_count": t_data.get("snippets_count", 0)
-        })
-
-    return jsonify({
-        "success": False,
-        "video_id": video_id,
-        "error": "No se encontraron subtítulos ni transcripciones para este video en YouTube."
-    }), 404
-
-@app.route('/api/youtube-audio', methods=['GET'])
-def youtube_audio():
-    """Stream audio of YouTube video directly to client for AI Speech-to-Text transcription."""
-    video_id = extract_youtube_id(request.args.get('url') or request.args.get('videoId') or '')
-    if not video_id:
-        return jsonify({"success": False, "error": "ID o enlace de video no válido."}), 400
-        
-    vdata, debug_info = get_youtube_video_data(video_id)
-    if not vdata or not vdata.get("audio_url"):
-        error_msg = (
-            "YouTube bloqueó temporalmente la extracción de audio desde el servidor (bot check / IP de datacenter). "
-            "Para solucionarlo, puedes configurar cookies de YouTube en la variable de entorno YOUTUBE_COOKIES en Render "
-            "o utilizar un video con subtítulos disponibles."
-        )
-        return jsonify({
-            "success": False, 
-            "error": error_msg, 
-            "debug": debug_info
-        }), 404
-
-    audio_url = vdata["audio_url"]
-    audio_headers = vdata.get("audio_headers", {})
-    ext = vdata.get("audio_ext", "m4a")
-    content_type = "audio/webm" if ext == "webm" else "audio/mp4"
-
-    def stream_audio():
-        # Stream audio up to ~24 MB (under Puter.js 25MB speech2txt limit)
-        req_headers = dict(audio_headers)
-        req_headers["Range"] = "bytes=0-24999999"
-        
-        # Load cookies if available
-        cookie_file = get_youtube_cookiefile()
-        cookies_dict = {}
-        if cookie_file and os.path.exists(cookie_file):
+            # Look for Spanish or preferred languages
             try:
-                cj = http.cookiejar.MozillaCookieJar(cookie_file)
-                cj.load(ignore_discard=True, ignore_expires=True)
-                cookies_dict = {c.name: c.value for c in cj}
+                target_transcript = transcript_list.find_transcript(['es', 'es-419', 'es-ES', 'es-AR'])
             except Exception:
                 pass
-
-        try:
-            with requests.get(audio_url, headers=req_headers, cookies=cookies_dict, stream=True, timeout=25) as r:
-                if r.status_code in [200, 206]:
-                    for chunk in r.iter_content(chunk_size=65536):
-                        if chunk:
-                            yield chunk
+                
+            # If not found directly, look for any transcript and translate to Spanish if translatable
+            if not target_transcript:
+                for t in transcript_list:
+                    target_transcript = t
+                    if hasattr(t, 'is_translatable') and t.is_translatable and t.language_code not in ['es', 'es-419', 'es-ES']:
+                        try:
+                            target_transcript = t.translate('es')
+                        except Exception:
+                            pass
+                    break
+                    
+            if target_transcript:
+                fetched = target_transcript.fetch()
+                if hasattr(fetched, 'to_raw_data'):
+                    raw_data = fetched.to_raw_data()
                 else:
-                    logger.error(f"YouTube audio stream returned HTTP status {r.status_code}")
-        except Exception as e:
-            logger.error(f"Error streaming audio from YouTube: {e}")
+                    raw_data = fetched
+            else:
+                fetched = api.fetch(video_id, languages=['es', 'es-419', 'es-ES', 'en'])
+                if hasattr(fetched, 'to_raw_data'):
+                    raw_data = fetched.to_raw_data()
+                else:
+                    raw_data = fetched
+        except Exception as e1:
+            # 2. Try legacy v0.x API (class-based)
+            try:
+                if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+                    tl = YouTubeTranscriptApi.list_transcripts(video_id)
+                    t = None
+                    try:
+                        t = tl.find_transcript(['es', 'es-419', 'es-ES', 'en'])
+                    except Exception:
+                        for item in tl:
+                            t = item
+                            break
+                    if t:
+                        raw_data = t.fetch()
+                if not raw_data and hasattr(YouTubeTranscriptApi, 'get_transcript'):
+                    raw_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['es', 'es-419', 'es-ES', 'en'])
+            except Exception:
+                raise e1
 
-    return Response(
-        stream_with_context(stream_audio()),
-        content_type=content_type,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Content-Disposition": f'attachment; filename="youtube_{video_id}.{ext}"'
+        if not raw_data:
+            return {
+                "success": False,
+                "error": "No se encontraron subtítulos ni transcripción disponible para este video en YouTube. Asegúrate de que el video tenga subtítulos activados (CC)."
+            }
+
+        full_text_pieces = []
+        timed_snippets = []
+        
+        for item in raw_data:
+            text = (item.get('text') if isinstance(item, dict) else getattr(item, 'text', '')).strip()
+            start = int(item.get('start') if isinstance(item, dict) else getattr(item, 'start', 0))
+            minutes = start // 60
+            seconds = start % 60
+            timestamp = f"{minutes:02d}:{seconds:02d}"
+            
+            if text:
+                full_text_pieces.append(text)
+                timed_snippets.append(f"[{timestamp}] {text}")
+                
+        if not full_text_pieces:
+            return {
+                "success": False,
+                "error": "La transcripción del video está vacía."
+            }
+
+        last_start = raw_data[-1].get('start', 0) if isinstance(raw_data[-1], dict) else getattr(raw_data[-1], 'start', 0)
+        return {
+            "success": True,
+            "full_text": " ".join(full_text_pieces),
+            "timed_text": "\n".join(timed_snippets),
+            "duration_seconds": int(last_start)
         }
-    )
+    except Exception as e:
+        error_msg = str(e)
+        if "TranscriptsDisabled" in error_msg or "Subtitles are disabled" in error_msg:
+            return {
+                "success": False,
+                "error": "El autor de este video tiene desactivados los subtítulos en YouTube. Si tienes diapositivas o apuntes de la clase en PDF, súbelos aquí y la IA generará el apunte completo."
+            }
+        if "NoTranscriptFound" in error_msg:
+            return {
+                "success": False,
+                "error": "No se encontró una transcripción en español o inglés para este video. Asegúrate de que el video cuente con subtítulos o transcripción automática generada por YouTube."
+            }
+        return {
+            "success": False,
+            "error": f"No se pudo extraer la transcripción del video ({error_msg}). Asegúrate de que el video tenga subtítulos o transcripción activada en YouTube."
+        }
 
+def extract_pdf_text(filepath):
+    """Extract text and metadata from PDF using pypdf."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(filepath)
+        total_pages = len(reader.pages)
+        pages_content = []
+        full_text = []
+        
+        for i, page in enumerate(reader.pages):
+            page_text = page.extract_text() or ""
+            page_text = page_text.strip()
+            if page_text:
+                pages_content.append(f"--- PÁGINA {i+1} ---\n{page_text}")
+                full_text.append(page_text)
+                
+        return {
+            "success": True,
+            "pages": total_pages,
+            "content": "\n\n".join(pages_content),
+            "raw_text": "\n".join(full_text)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Error al procesar el archivo PDF: {str(e)}"
+        }
 
+SYSTEM_INSTRUCTION = """
+Eres un pedagogo experto y creador de material de estudio universitario de máxima calidad técnica y didáctica.
+Tu misión es transformar el material fuente proporcionado (transcripción de video de YouTube, contenido de documento PDF o ambos) en un **Apunte de Estudio Maestro** completo, profundo, visualmente enriquecido e interactivo.
+
+Debes responder ÚNICAMENTE con un objeto JSON válido (sin bloques de código markdown fuera del JSON, solo el JSON puro) con la siguiente estructura:
+
+{
+  "title": "Título Claro y Profesional del Tema Principal",
+  "topic_overview": "Breve sinopsis (2-3 oraciones) de lo que abarca este apunte",
+  "estimated_study_time": "ej. 25 min",
+  "key_takeaways": [
+    {
+      "type": "critical" | "rule" | "warning" | "tip",
+      "title": "Título de la idea clave o regla de oro",
+      "description": "Explicación concisa y contundente del concepto clave que no puede olvidarse."
+    }
+  ],
+  "developments": [
+    {
+      "unit_number": 1,
+      "title": "Título de la Sección / Unidad Temática",
+      "content_markdown": "Desarrollo profundo y exhaustivo de esta sección. Explica el qué, el porqué y el cómo. Incluye subtítulos (###), listas ordenadas, pasos detallados, ejemplos prácticos reales y fórmulas matemáticas en formato LaTeX (usando $formula$ para inline o $$formula$$ para bloque). No escatimes en detalles explicativos.",
+      "visual_description": "Descripción clara de qué imagen o gráfico conceptual ilustra este concepto",
+      "mermaid_diagram": "Código Mermaid.js válido (ej. graph TD o mindmap) si esta sección se beneficia de un diagrama conceptual de flujo o estructura. Si no aplica, dejar string vacío \"\"."
+    }
+  ],
+  "general_diagram": {
+    "title": "Mapa Mental o Flujo Global del Tema",
+    "mermaid_code": "Código Mermaid.js completo y sintácticamente válido (ej: graph TD\\n    A[Concepto Central] --> B[Rama 1]\\n    ...)"
+  },
+  "flashcards": [
+    {
+      "question": "Pregunta de examen o concepto a definir",
+      "answer": "Respuesta clara, precisa y completa para repasar activamente",
+      "topic": "Nombre del subtema"
+    }
+  ],
+  "quiz": [
+    {
+      "question": "¿Pregunta de opción múltiple estilo examen?",
+      "options": [
+        "Opción A",
+        "Opción B",
+        "Opción C",
+        "Opción D"
+      ],
+      "correct_index": 0,
+      "explanation": "Explicación detallada de por qué esta opción es la correcta y por qué las demás no."
+    }
+  ],
+  "exam_tips": [
+    "Pregunta típica de examen o trampa común del profesor y cómo responderla."
+  ],
+  "glossary": [
+    {
+      "term": "Término técnico",
+      "definition": "Definición exacta y contextualizada."
+    }
+  ]
+}
+
+REGLAS DE ORO:
+1. El contenido de 'developments' debe ser profundo, pedagógico y riguroso. No hagas un resumen superficial: desarrolla los temas paso a paso.
+2. Si hay fórmulas matemáticas, físicas o químicas, exprésalas siempre en LaTeX ($...$ o $$...$$).
+3. Asegúrate de que los diagramas Mermaid tengan sintaxis perfectamente válida sin caracteres extraños que rompan el renderizado.
+4. Genera al menos entre 6 y 10 flashcards y entre 4 y 6 preguntas de quiz de alta calidad para autoevaluación.
+5. Devuelve EXCLUSIVAMENTE el JSON.
+"""
 
 @app.route('/api/demo', methods=['GET'])
 def get_demo_notes():
@@ -870,642 +480,245 @@ def get_demo_notes():
     }
     return jsonify({"success": True, "data": sample})
 
-# ---------------------------------------------------------------------------
-# Google Gemini AI Integration & Study Notes Generation
-# ---------------------------------------------------------------------------
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-GEMINI_MODELS = GeminiConfig.MODELS
+@app.route('/api/status', methods=['GET'])
+def check_status():
+    api_key = get_api_key()
+    return jsonify({
+        "status": "ready",
+        "has_api_key": bool(api_key),
+        "key_preview": f"{api_key[:6]}...{api_key[-4:]}" if api_key and len(api_key) > 10 else None
+    })
 
-SYSTEM_PROMPT = """Eres un catedrático universitario de élite y pedagogo experto.
-Tu misión es transformar el material recibido (videos de YouTube, documentos PDF, audios o apuntes) en un conjunto magistral de apuntes de estudio universitarios, profundos, estructurados, claros y estéticamente atractivos.
-
-DEBES responder EXCLUSIVAMENTE con un único objeto JSON válido (sin texto introductorio ni explicaciones fuera del JSON) con la siguiente estructura exacta:
-{
-  "title": "Título conciso, profesional y atractivo del tema",
-  "topic_overview": "Resumen ejecutivo de alto nivel que explica la importancia, alcance e impacto del tema (2-3 párrafos)",
-  "estimated_study_time": "ej: 25 min",
-  "key_takeaways": [
-    {
-      "type": "critical",
-      "title": "Título del concepto crítico",
-      "description": "Explicación directa y memorable."
-    },
-    {
-      "type": "rule",
-      "title": "Regla de oro o principio",
-      "description": "Principio rector o axioma a recordar siempre."
-    },
-    {
-      "type": "tip",
-      "title": "Consejo de aplicación práctica",
-      "description": "Cómo aplicar este conocimiento en la práctica."
-    },
-    {
-      "type": "warning",
-      "title": "Error o trampa común",
-      "description": "Equívoco frecuente que cometen los estudiantes y cómo evitarlo."
-    }
-  ],
-  "developments": [
-    {
-      "unit_number": 1,
-      "title": "Nombre de la Unidad Temática",
-      "content_markdown": "Desarrollo profundo y exhaustivo en formato Markdown. Usa subtítulos (###), listas numeradas, viñetas y ejemplos claros. Si incluye fórmulas matemáticas o notación científica, utiliza KaTeX válido: $inline$ o $$bloque$$.",
-      "visual_description": "Descripción conceptual de lo que representa esquemáticamente esta sección.",
-      "mermaid_diagram": "graph TD\\n    A[Paso 1] --> B[Paso 2]\\n    B --> C[Resultado]"
-    }
-  ],
-  "general_diagram": {
-    "title": "Mapa Conceptual Global",
-    "mermaid_code": "graph TD\\n    A[Tema Central] --> B[Eje Teórico]\\n    A --> C[Eje Práctico]"
-  },
-  "flashcards": [
-    {
-      "topic": "Nombre del concepto o eje",
-      "question": "¿Pregunta desafiante para autoevaluación activa?",
-      "answer": "Respuesta pedagógica, rigurosa y directa."
-    }
-  ],
-  "quiz": [
-    {
-      "question": "Pregunta de opción múltiple estilo examen universitario",
-      "options": ["Opción A", "Opción B", "Opción C", "Opción D"],
-      "correct_index": 0,
-      "explanation": "Explicación detallada de por qué esta es la opción correcta y por qué las otras son incorrectas."
-    }
-  ],
-  "exam_tips": [
-    "Consejo estratégico para exámenes orales o escritos sobre este tema."
-  ],
-  "glossary": [
-    {
-      "term": "Término técnico",
-      "definition": "Definición riguroora y clara del término."
-    }
-  ]
-}
-
-Reglas mandatorias:
-1. 'key_takeaways': incluir entre 3 y 6 elementos variando los tipos ('critical', 'rule', 'tip', 'warning').
-2. 'developments': desarrollar entre 2 y 5 unidades exhaustivas. Si el tema incluye matemática o lógica, incluye fórmulas completas en KaTeX ($ y $$).
-3. 'general_diagram': diagrama conceptual en sintaxis Mermaid válida (graph TD o graph LR).
-4. 'flashcards': entre 4 y 8 tarjetas de memorización activa.
-5. 'quiz': entre 3 y 5 preguntas de opción múltiple con 4 opciones cada una y 'correct_index' (0, 1, 2 o 3).
-6. 'exam_tips': entre 2 y 4 consejos para exámenes.
-7. 'glossary': entre 3 y 6 definiciones técnicas clave.
-8. Todo el contenido debe estar en ESPAÑOL fluido, académico y pedagógico.
-9. En fórmulas KaTeX, asegúrate de escapar correctamente las barras invertidas en el JSON (ej: \\\\frac{a}{b}, \\\\sigma).
-"""
-
-def extract_gemini_api_key(req):
-    """Extract Gemini API Key from header, form, json body, query param, or environment."""
-    key = req.headers.get("X-Gemini-Api-Key")
-    if key and key.strip():
-        return key.strip()
-    
-    if req.is_json:
-        body = req.get_json(silent=True) or {}
-        key = body.get("apiKey")
-        if key and str(key).strip():
-            return str(key).strip()
-    elif req.form:
-        key = req.form.get("apiKey")
-        if key and str(key).strip():
-            return str(key).strip()
-            
-    key = req.args.get("apiKey")
-    if key and str(key).strip():
-        return str(key).strip()
-
-    env_key = os.environ.get("GEMINI_API_KEY")
-    if env_key and env_key.strip():
-        return env_key.strip()
-
-    return None
-
-def extract_pdf_text(filepath):
-    """Extract readable text from PDF pages using pypdf."""
-    try:
-        reader = pypdf.PdfReader(filepath)
-        pages_text = []
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text()
-            if text and text.strip():
-                pages_text.append(f"--- Página {i+1} ---\n{text.strip()}")
-        return '\n\n'.join(pages_text)
-    except Exception as e:
-        logger.warning(f"Error extracting PDF text: {e}")
-        return ""
-
-def robust_parse_json(text):
-    """Clean and parse JSON from Gemini, handling markdown code fences, trailing commas, and unescaped LaTeX backslashes."""
-    if not text:
-        raise ValueError("Texto de respuesta vacío de Gemini.")
-    
-    cleaned = text.strip()
-    cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
-    cleaned = re.sub(r'```\s*$', '', cleaned, flags=re.MULTILINE).strip()
-    
-    start = cleaned.find('{')
-    end = cleaned.rfind('}')
-    if start != -1 and end != -1:
-        cleaned = cleaned[start:end+1]
+@app.route('/api/save-key', methods=['POST'])
+def save_key():
+    data = request.get_json() or {}
+    key = data.get('apiKey', '').strip()
+    if not key:
+        return jsonify({"success": False, "error": "La clave no puede estar vacía"}), 400
         
     try:
-        return json.loads(cleaned)
-    except Exception:
-        # Escape invalid backslashes (especially from LaTeX like \frac, \sigma, \begin, etc.)
-        fixed = re.sub(r'\\(?![\\"/bfnrtu])', r'\\\\', cleaned)
-        try:
-            return json.loads(fixed)
-        except Exception:
-            fixed2 = re.sub(r',\s*([\]}])', r'\1', fixed)
-            return json.loads(fixed2)
+        # Save to .env
+        env_lines = []
+        if env_path.exists():
+            with open(env_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if not line.startswith("GEMINI_API_KEY="):
+                        env_lines.append(line)
+        env_lines.append(f"GEMINI_API_KEY={key}\n")
+        with open(env_path, 'w', encoding='utf-8') as f:
+            f.writelines(env_lines)
+            
+        os.environ['GEMINI_API_KEY'] = key
+        return jsonify({"success": True, "message": "Clave guardada exitosamente"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
-MAP_SOURCE_SYSTEM_PROMPT = """Eres un docente universitario y pedagogo de élite.
-Tu objetivo es analizar exhaustivamente la fuente de estudio provista (video audiovisual, audio, PDF o transcripción) y extraer una SÍNTESIS TÉCNICA Y PEDAGÓGICA RIGUROSA.
-
-Debes extraer y explicar con máximo detalle:
-1. CONCEPTOS TEÓRICOS FUNDAMENTALES: Principios físicos, teoremas, hipótesis y fundamentos paso a paso.
-2. FÓRMULAS, ECUACIONES Y MODELOS MATEMÁTICOS: Escribe TODAS las fórmulas matemáticas y deducciones utilizando notación KaTeX válida ($inline$ y $$bloque$$). Explica el significado físico de cada variable y constante.
-3. PROCEDIMIENTOS TÉCNICOS Y CRITERIOS PRÁCTICOS: Metodologías de cálculo, secuencias constructivas, normativas o criterios de diseño aplicados.
-4. EJEMPLOS, CASOS DE APLICACIÓN Y ESQUEMAS: Si en el material se mencionan o muestran esquemas, diagramas o pizarras, descríbelos conceptualmente con precisión.
-5. DEFINICIONES CLAVE: Términos técnicos con su definición formal.
-
-Conserva todo el rigor científico y académico del material. Escribe en ESPAÑOL fluido, claro y estructurado con subtítulos Markdown (###).
-"""
-
-def call_gemini_with_fallback(client, contents_parts, system_instruction=None, response_mime_type=None, temperature=0.3):
-    """Call Gemini using GEMINI_MODELS hierarchy with automatic exponential backoff on 503/transient errors."""
-    attempted_errors = {}
-    
-    for model_name in GEMINI_MODELS:
-        max_retries = 2
-        for attempt in range(1, max_retries + 2):
-            log_start = f"[GEMINI REQUEST] Consultando modelo: {model_name} (Intento {attempt}/{max_retries + 1})"
-            logger.info(log_start)
-            print(log_start, flush=True)
-
-            try:
-                config_args = {
-                    "temperature": temperature
-                }
-                if system_instruction:
-                    config_args["system_instruction"] = system_instruction
-                if response_mime_type:
-                    config_args["response_mime_type"] = response_mime_type
-
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=contents_parts,
-                    config=types.GenerateContentConfig(**config_args)
-                )
-                if response and response.text:
-                    log_success = f"[GEMINI SUCCESS] Respuesta obtenida exitosamente con el modelo: {model_name}"
-                    logger.info(log_success)
-                    print(log_success, flush=True)
-                    return response.text, model_name
-            except Exception as e:
-                err_str = str(e)
-                is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "temporarily unavailable"])
-                if is_transient and attempt <= max_retries:
-                    backoff_sec = attempt * 2  # 2s, then 4s
-                    log_retry = f"[GEMINI RETRY] Modelo '{model_name}' devolvió error transitorio ({err_str[:120]}...). Reintentando en {backoff_sec}s (intento {attempt}/{max_retries})..."
-                    logger.warning(log_retry)
-                    print(log_retry, flush=True)
-                    time.sleep(backoff_sec)
-                    continue
-                else:
-                    log_err = f"[GEMINI ERROR] Falló generación con modelo '{model_name}': {err_str}"
-                    logger.warning(log_err)
-                    print(log_err, flush=True)
-                    attempted_errors[model_name] = err_str
-                    break  # move to fallback model
-
-    err_summary = " | ".join([f"{m}: {err}" for m, err in attempted_errors.items()])
-    log_critical = f"[GEMINI CRITICAL] Todos los modelos configurados {GEMINI_MODELS} fallaron. Resumen: {err_summary}"
-    logger.error(log_critical)
-    print(log_critical, flush=True)
-    raise RuntimeError(err_summary)
-
-def build_multimodal_video_tasks(video_id, v_title, v_thumb):
-    """Create one or more source tasks for a YouTube video without captions.
-    Uses adaptive frame rate (VideoMetadata fps) and temporal chunking so that
-    even ultra-long videos (1h, 2h, 4h+) never exceed Gemini's 1M context limit.
-    """
-    duration_sec = get_youtube_duration_seconds(video_id)
-    if duration_sec <= 0:
-        duration_sec = 3600
-
-    video_uri = f"https://www.youtube.com/watch?v={video_id}"
-    tasks = []
-
-    # Adaptive FPS rules:
-    # Educational lectures have slides / whiteboards where 0.1 FPS (1 frame every 10s)
-    # preserves all formulas and diagrams while reducing video tokens by 90% (~55 tokens/sec).
-    if duration_sec <= 1200:  # <= 20 min
-        fps = 0.5
-        vm = types.VideoMetadata(fps=fps, start_offset="0s", end_offset=f"{duration_sec}s")
-        parts = [
-            types.Part(file_data=types.FileData(file_uri=video_uri), video_metadata=vm),
-            types.Part.from_text(text=f"Analiza a fondo este video '{v_title}' ({duration_sec}s) para extraer y estructurar todas sus enseñanzas técnicas y fórmulas.")
-        ]
-        tasks.append({
-            "type": "youtube_multimodal",
-            "title": v_title,
-            "video_id": video_id,
-            "thumbnail": v_thumb,
-            "duration_sec": duration_sec,
-            "parts": parts,
-            "estimated_tokens": int(duration_sec * 120)
-        })
-    elif duration_sec <= 7200:  # 20 min to 2 hours (e.g. 83m = 4983s -> ~274k tokens, 108m = 6536s -> ~359k tokens)
-        fps = 0.1
-        vm = types.VideoMetadata(fps=fps, start_offset="0s", end_offset=f"{duration_sec}s")
-        parts = [
-            types.Part(file_data=types.FileData(file_uri=video_uri), video_metadata=vm),
-            types.Part.from_text(text=f"Analiza a fondo esta clase completa '{v_title}' ({duration_sec // 60} minutos) para extraer y estructurar exhaustivamente todas sus fórmulas KaTeX, conceptos y deducciones.")
-        ]
-        tasks.append({
-            "type": "youtube_multimodal",
-            "title": v_title,
-            "video_id": video_id,
-            "thumbnail": v_thumb,
-            "duration_sec": duration_sec,
-            "parts": parts,
-            "estimated_tokens": int(duration_sec * 55)
-        })
-    else:  # > 2 hours (e.g. 3, 4, 6 hours): chunk into 3600s (1 hour) segments
-        chunk_size = 3600
-        fps = 0.1
-        total_chunks = (duration_sec + chunk_size - 1) // chunk_size
-        for i in range(total_chunks):
-            start_s = i * chunk_size
-            end_s = min(duration_sec, (i + 1) * chunk_size)
-            chunk_title = f"{v_title} (Segmento {i+1}/{total_chunks}: min {start_s//60} a {end_s//60})"
-            vm = types.VideoMetadata(fps=fps, start_offset=f"{start_s}s", end_offset=f"{end_s}s")
-            parts = [
-                types.Part(file_data=types.FileData(file_uri=video_uri), video_metadata=vm),
-                types.Part.from_text(text=f"Analiza el segmento ({start_s//60}m a {end_s//60}m) del video '{v_title}' extrayendo todas sus explicaciones y fórmulas.")
-            ]
-            tasks.append({
-                "type": "youtube_multimodal",
-                "title": chunk_title,
-                "video_id": video_id,
-                "thumbnail": v_thumb,
-                "duration_sec": end_s - start_s,
-                "parts": parts,
-                "estimated_tokens": int((end_s - start_s) * 55)
-            })
-
-    return tasks
+@app.route('/api/youtube-preview', methods=['POST'])
+def youtube_preview():
+    data = request.get_json() or {}
+    url = data.get('url', '')
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        return jsonify({"success": False, "error": "Enlace de YouTube no válido"}), 400
+        
+    meta = get_youtube_metadata(video_id)
+    meta["video_id"] = video_id
+    meta["success"] = True
+    return jsonify(meta)
 
 @app.route('/api/generate-notes', methods=['POST'])
-@app.route('/api/generate', methods=['POST'])
 def generate_notes():
-    """Main generation endpoint using direct Google Gemini AI with Map-Reduce and Adaptive Video processing."""
-    api_key = extract_gemini_api_key(request)
+    api_key = get_api_key(request.form)
     if not api_key:
         return jsonify({
-            "success": False,
-            "needs_key": True,
-            "error": "Por favor configura tu clave de Gemini API para sintetizar tus apuntes. Es 100% gratuita y privada."
-        }), 401
+            "success": False, 
+            "error": "Se requiere una clave de API de Gemini (GEMINI_API_KEY). Puedes ingresarla en el menú de configuración de la app o guardarla en el archivo .env."
+        }), 400
 
-    is_json = request.is_json
-    body = request.get_json(silent=True) or {} if is_json else {}
-    form = request.form if not is_json else {}
+    youtube_url = request.form.get('youtubeUrl', '').strip()
+    custom_instructions = request.form.get('instructions', '').strip()
+    depth_level = request.form.get('depth', 'completo')  # 'conciso', 'completo', 'exhaustivo'
+    
+    collected_sources = []
+    source_texts = []
+    video_metadata = None
 
-    # Extract parameters
-    depth = (body.get('depth') or form.get('depth') or 'standard').strip()
-    style = (body.get('style') or form.get('style') or 'academic').strip()
-    user_instructions = (body.get('instructions') or form.get('instructions') or '').strip()
-    notes_text = (body.get('notes_text') or body.get('manual_text') or form.get('notes_text') or form.get('manual_text') or '').strip()
+    # 1. Process YouTube videos if provided (supports multiple URLs)
+    raw_urls = request.form.getlist('youtubeUrls')
+    single_url = request.form.get('youtubeUrl', '').strip()
+    if single_url and single_url not in raw_urls:
+        raw_urls.append(single_url)
 
-    # YouTube URLs
-    raw_yt = body.get('youtube_urls') or body.get('youtube_url') or form.get('youtube_urls') or form.get('youtube_url')
-    youtube_urls = []
-    if isinstance(raw_yt, list):
-        youtube_urls = [str(u).strip() for u in raw_yt if str(u).strip()]
-    elif isinstance(raw_yt, str) and raw_yt.strip():
-        if raw_yt.strip().startswith('['):
-            try:
-                parsed_list = json.loads(raw_yt)
-                if isinstance(parsed_list, list):
-                    youtube_urls = [str(u).strip() for u in parsed_list if str(u).strip()]
-            except Exception:
-                youtube_urls = [raw_yt.strip()]
-        else:
-            youtube_urls = [u.strip() for u in raw_yt.split(',') if u.strip()]
+    cleaned_urls = []
+    for u in raw_urls:
+        u = u.strip()
+        if u and u not in cleaned_urls:
+            cleaned_urls.append(u)
 
-    # Client-side transcripts map
-    raw_ct = body.get('client_transcripts') or form.get('client_transcripts')
-    client_transcripts = {}
-    if isinstance(raw_ct, dict):
-        client_transcripts = raw_ct
-    elif isinstance(raw_ct, str) and raw_ct.strip():
-        try:
-            client_transcripts = json.loads(raw_ct)
-        except Exception:
-            pass
-
-    source_tasks = []
-    sources_list = []
-    saved_temp_files = []
-
-    try:
-        client = genai.Client(api_key=api_key)
-
-        # 1. Process YouTube videos (deduplicate by video_id)
-        seen_video_ids = set()
-        for yt_url in youtube_urls:
-            video_id = extract_youtube_id(yt_url)
-            if not video_id or video_id in seen_video_ids:
-                continue
-            seen_video_ids.add(video_id)
-
-            v_meta = get_youtube_metadata(video_id)
-            v_title = v_meta.get("title", f"Video {video_id}")
-            v_thumb = v_meta.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg")
-
-            transcript_text = None
-            # Check client-side transcript first
-            if video_id in client_transcripts and len(str(client_transcripts[video_id]).strip()) > 5:
-                transcript_text = str(client_transcripts[video_id]).strip()
-
-            # Check server-side transcript extraction if client didn't supply one
-            if not transcript_text:
-                t_data = get_youtube_transcript_api(video_id)
-                if t_data and t_data.get("full_text"):
-                    transcript_text = t_data["full_text"]
-
-            if transcript_text:
-                clean_transcript = re.sub(r'[ \t]+', ' ', transcript_text)
-                clean_transcript = re.sub(r'\n{3,}', '\n\n', clean_transcript).strip()
-                source_tasks.append({
-                    "type": "youtube_transcript",
-                    "title": v_title,
-                    "video_id": video_id,
-                    "thumbnail": v_thumb,
-                    "parts": [
-                        types.Part.from_text(
-                            text=f"=== FUENTE VIDEO YOUTUBE ({video_id}): '{v_title}' ===\nTranscripción completa:\n{clean_transcript}"
-                        )
-                    ],
-                    "estimated_tokens": len(clean_transcript) // 4
-                })
-                sources_list.append({
-                    "type": "youtube",
-                    "title": v_title,
-                    "video_id": video_id,
-                    "thumbnail": v_thumb,
-                    "has_captions": True
-                })
-            else:
-                # Video has NO captions or datacenter is blocked:
-                # Use Gemini Native Multimodal Video understanding with adaptive FPS & chunking!
-                logger.info(f"Using Gemini Native Multimodal Video understanding with adaptive FPS for {video_id}")
-                video_tasks = build_multimodal_video_tasks(video_id, v_title, v_thumb)
-                source_tasks.extend(video_tasks)
-                sources_list.append({
-                    "type": "youtube",
-                    "title": v_title,
-                    "video_id": video_id,
-                    "thumbnail": v_thumb,
-                    "has_captions": False,
-                    "mode": "gemini_multimodal_video"
-                })
-
-        # 2. Process PDF uploads
-        pdf_files = request.files.getlist('pdf_files') or request.files.getlist('files')
-        for file in pdf_files:
-            if file and file.filename:
-                safe_name = secure_filename(file.filename)
-                dest_path = UPLOAD_FOLDER / f"pdf_{os.urandom(4).hex()}_{safe_name}"
-                file.save(dest_path)
-                saved_temp_files.append(dest_path)
-
-                pdf_text = extract_pdf_text(dest_path)
-                if pdf_text and len(pdf_text.strip()) > 100:
-                    source_tasks.append({
-                        "type": "pdf_text",
-                        "title": file.filename,
-                        "parts": [
-                            types.Part.from_text(text=f"=== FUENTE DOCUMENTO PDF: '{file.filename}' ===\n{pdf_text}")
-                        ],
-                        "estimated_tokens": len(pdf_text) // 4
-                    })
-                    sources_list.append({
-                        "type": "pdf",
-                        "filename": file.filename,
-                        "pages": len(pdf_text.split("--- Página ")) - 1
-                    })
-                else:
-                    # Upload visual/scanned PDF directly to Gemini
-                    logger.info(f"Uploading visual PDF {file.filename} to Gemini File API")
-                    uploaded_pdf = client.files.upload(file=str(dest_path))
-                    source_tasks.append({
-                        "type": "pdf_multimodal",
-                        "title": file.filename,
-                        "parts": [
-                            uploaded_pdf,
-                            types.Part.from_text(text=f"Analiza este documento PDF adjunto ('{file.filename}') exhaustivamente.")
-                        ],
-                        "estimated_tokens": 50000
-                    })
-                    sources_list.append({
-                        "type": "pdf",
-                        "filename": file.filename,
-                        "mode": "gemini_file_upload"
-                    })
-
-        # 3. Process Audio uploads
-        audio_files = request.files.getlist('audio_files')
-        for afile in audio_files:
-            if afile and afile.filename:
-                safe_name = secure_filename(afile.filename)
-                dest_path = UPLOAD_FOLDER / f"audio_{os.urandom(4).hex()}_{safe_name}"
-                afile.save(dest_path)
-                saved_temp_files.append(dest_path)
-
-                logger.info(f"Uploading audio {afile.filename} to Gemini File API")
-                uploaded_audio = client.files.upload(file=str(dest_path))
-                source_tasks.append({
-                    "type": "audio_multimodal",
-                    "title": afile.filename,
-                    "parts": [
-                        uploaded_audio,
-                        types.Part.from_text(text=f"Escucha y analiza exhaustivamente la grabación de audio ('{afile.filename}') para extraer y estructurar las enseñanzas de la clase.")
-                    ],
-                    "estimated_tokens": 100000
-                })
-                sources_list.append({
-                    "type": "audio",
-                    "filename": afile.filename,
-                    "mode": "gemini_audio_upload"
-                })
-
-        # 4. Process manual notes
-        if notes_text:
-            source_tasks.append({
-                "type": "notes",
-                "title": "Notas personales",
-                "parts": [
-                    types.Part.from_text(text=f"=== APUNTES Y NOTAS PERSONALES DEL USUARIO ===\n{notes_text}")
-                ],
-                "estimated_tokens": len(notes_text) // 4
-            })
-            sources_list.append({
-                "type": "notes",
-                "title": "Notas personales"
-            })
-
-        if not source_tasks:
+    for idx, url in enumerate(cleaned_urls):
+        video_id = extract_youtube_id(url)
+        if not video_id:
+            return jsonify({"success": False, "error": f"El enlace '{url}' no es un video de YouTube válido."}), 400
+            
+        v_meta = get_youtube_metadata(video_id)
+        transcript_res = get_youtube_transcript(video_id)
+        
+        if not transcript_res["success"]:
             return jsonify({
-                "success": False,
-                "error": "No se proporcionó ningún material. Ingresa un video de YouTube, sube un PDF, audio o escribe tus apuntes."
+                "success": False, 
+                "error": f"Error en video #{idx+1} ('{v_meta['title']}'): {transcript_res['error']}"
             }), 400
-
-        # Safety guard for massive text inputs (> 1M tokens)
-        total_text_tokens = None
-        try:
-            text_parts = [p for t in source_tasks for p in t["parts"] if hasattr(p, 'text') and p.text]
-            if text_parts:
-                cnt_resp = client.models.count_tokens(model=GeminiConfig.PRIMARY_MODEL, contents=text_parts)
-                raw_tokens = getattr(cnt_resp, 'total_tokens', None)
-                if isinstance(raw_tokens, (int, float)):
-                    total_text_tokens = int(raw_tokens)
-        except Exception:
-            pass
-
-        MAX_ALLOWED_TOKENS = 1_000_000
-        if total_text_tokens is not None and total_text_tokens > MAX_ALLOWED_TOKENS:
-            user_err_msg = (
-                f"El contenido combinado de las fuentes es demasiado extenso "
-                f"({total_text_tokens:,} tokens calculados, superando el límite de 1,048,576 tokens de Gemini). "
-                "Por favor probá con menos texto o material más conciso."
-            )
-            return jsonify({
-                "success": False,
-                "error": user_err_msg,
-                "total_tokens": total_text_tokens,
-                "token_limit": 1048576
-            }), 400
-
-        total_estimated_tokens = sum(t.get("estimated_tokens", 5000) for t in source_tasks)
-        log_pipeline = (
-            f"[PIPELINE START] Fuentes/tareas independientes: {len(source_tasks)} | "
-            f"Tokens estimados: {total_estimated_tokens:,} | "
-            f"Estrategia: {'FAST PATH (1 llamada directa)' if (len(source_tasks) == 1 and total_estimated_tokens <= 350000) else f'MAP-REDUCE ({len(source_tasks)} maps + 1 reduce)'}"
+            
+        collected_sources.append({
+            "type": "youtube",
+            "title": v_meta["title"],
+            "id": video_id,
+            "thumbnail": v_meta["thumbnail"],
+            "order": idx + 1
+        })
+        source_texts.append(
+            f"=== FUENTE VIDEO DE YOUTUBE #{idx+1}: '{v_meta['title']}' ===\n"
+            f"Transcripción con marcas de tiempo:\n{transcript_res['timed_text']}"
         )
-        logger.info(log_pipeline)
-        print(log_pipeline, flush=True)
 
-        result_data = None
-        used_model = GeminiConfig.PRIMARY_MODEL
-
-        # Fast Path (1 single source, moderate size)
-        if len(source_tasks) == 1 and total_estimated_tokens <= 350000:
-            task = source_tasks[0]
-            fast_parts = list(task["parts"])
-            inst_text = f"Genera los apuntes de estudio maestros para el material proporcionado.\nProfundidad: {depth}\nEstilo pedagógico: {style}\n"
-            if user_instructions:
-                inst_text += f"Instrucciones específicas del usuario: {user_instructions}\n"
-            fast_parts.append(types.Part.from_text(text=inst_text))
-
-            text_resp, used_model = call_gemini_with_fallback(
-                client,
-                fast_parts,
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                temperature=0.3
-            )
-            result_data = robust_parse_json(text_resp)
-
-        else:
-            # Map-Reduce Path: Process each source in isolation, then consolidate
-            source_summaries = []
-            for idx, task in enumerate(source_tasks):
-                log_map = f"[MAP PHASE] ({idx+1}/{len(source_tasks)}) Analizando fuente: '{task['title']}' (tokens est: ~{task.get('estimated_tokens', 0):,})..."
-                logger.info(log_map)
-                print(log_map, flush=True)
-
-                map_parts = list(task["parts"])
-                map_parts.append(types.Part.from_text(
-                    text=(
-                        f"Analiza a fondo esta fuente de estudio ('{task['title']}'). "
-                        "Produce un extracto técnico y pedagógico exhaustivo y denso. "
-                        "Extrae todas las definiciones, fórmulas matemáticas en notación KaTeX ($inline$ y $$bloque$$), "
-                        "demostraciones, procedimientos paso a paso y criterios prácticos."
-                    )
-                ))
-
-                summary_text, last_model = call_gemini_with_fallback(
-                    client,
-                    map_parts,
-                    system_instruction=MAP_SOURCE_SYSTEM_PROMPT,
-                    response_mime_type=None,
-                    temperature=0.3
+    # 2. Process uploaded PDF files if provided
+    uploaded_files = request.files.getlist('pdfFiles')
+    for file in uploaded_files:
+        if file and file.filename and file.filename.lower().endswith('.pdf'):
+            safe_name = secure_filename(file.filename)
+            save_path = UPLOAD_FOLDER / safe_name
+            file.save(save_path)
+            
+            pdf_res = extract_pdf_text(str(save_path))
+            if pdf_res["success"]:
+                collected_sources.append({
+                    "type": "pdf",
+                    "filename": safe_name,
+                    "pages": pdf_res["pages"]
+                })
+                source_texts.append(
+                    f"=== FUENTE DOCUMENTO PDF '{safe_name}' ({pdf_res['pages']} páginas) ===\n"
+                    f"{pdf_res['content']}"
                 )
-                used_model = last_model
-                source_summaries.append(f"=== SÍNTESIS TÉCNICA DE FUENTE ({idx+1}/{len(source_tasks)}): '{task['title']}' ===\n{summary_text}")
+            else:
+                return jsonify({"success": False, "error": pdf_res["error"]}), 400
 
-            # Reduce Phase
-            log_reduce = f"[REDUCE PHASE] Consolidando {len(source_summaries)} síntesis independientes en el apunte maestro definitivo..."
-            logger.info(log_reduce)
-            print(log_reduce, flush=True)
+    if not source_texts:
+        return jsonify({"success": False, "error": "Debes proporcionar al menos un enlace de YouTube o un archivo PDF."}), 400
 
-            combined_summaries = "\n\n".join(source_summaries)
-            reduce_prompt = (
-                f"A continuación tienes las síntesis técnicas y pedagógicas detalladas extraídas de {len(source_summaries)} fuentes independientes de estudio:\n\n"
-                f"{combined_summaries}\n\n"
-                f"Tu misión es integrar y estructurar TODO este conocimiento en el APUNTE MAESTRO DEFINITIVO.\n"
-                f"Profundidad solicitada: {depth}\n"
-                f"Estilo pedagógico: {style}\n"
-            )
-            if user_instructions:
-                reduce_prompt += f"Instrucciones específicas del usuario: {user_instructions}\n"
-            reduce_prompt += (
-                "\nGenera el objeto JSON completo según las especificaciones del sistema, con KaTeX, diagramas Mermaid, "
-                "flashcards, quiz, consejos de examen y glosario técnico."
-            )
+    # Assemble User Prompt
+    depth_instructions = {
+        "conciso": "Nivel de profundidad: RESUMEN CONCISO. Enfócate en las ideas centrales, esquemas y conceptos primordiales.",
+        "completo": "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO. Desarrolla todos los temas con rigor, explicaciones paso a paso, ejemplos y fundamentos.",
+        "exhaustivo": "Nivel de profundidad: GUÍA EXHAUSTIVA DE ESTUDIO. Máximo nivel de detalle pedagógico, desglosando cada subtema, fórmula, demostración y casos prácticos."
+    }.get(depth_level, "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO.")
 
-            text_resp, used_model = call_gemini_with_fallback(
-                client,
-                [types.Part.from_text(text=reduce_prompt)],
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                temperature=0.3
-            )
-            result_data = robust_parse_json(text_resp)
+    multi_source_hint = f"\nNOTA PEDAGÓGICA: Has recibido {len(source_texts)} fuentes distintas (pueden ser partes consecutivas de una clase o serie, o documentos complementarios). Sintetiza y unifica todo el material en un único Apunte Maestro armónico, integrando ordenadamente los contenidos de todas las partes sin redundancias.\n" if len(source_texts) > 1 else ""
 
-        result_data["_used_model"] = used_model
+    user_prompt = f"""
+{depth_instructions}
+{multi_source_hint}
+{f"INSTRUCCIONES Y ENFOQUE ESPECIAL DEL ESTUDIANTE: {custom_instructions}" if custom_instructions else ""}
 
-        # Merge sources
-        if not result_data.get("sources"):
-            result_data["sources"] = sources_list
-        else:
-            for s in sources_list:
-                if not any(x.get("video_id") == s.get("video_id") and s.get("video_id") for x in result_data["sources"]):
-                    result_data["sources"].append(s)
+A continuación tienes el material fuente para analizar y sintetizar:
 
-        return jsonify({"success": True, "data": result_data})
+{"---".join(source_texts)}
 
-    except Exception as e:
-        logger.error(f"Error general en generate_notes: {e}", exc_info=True)
-        return jsonify({
-            "success": False,
-            "error": f"Error al procesar la solicitud: {str(e)}"
-        }), 500
+Genera el Apunte Maestro siguiendo estrictamente el esquema JSON especificado.
+"""
 
-    finally:
-        # Cleanup temporary uploaded files
-        for tmp_path in saved_temp_files:
+    # Call Gemini API using official google-genai SDK
+    try:
+        from google import genai
+        from google.genai import types
+        
+        client = genai.Client(api_key=api_key)
+        
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.3,
+            response_mime_type="application/json"
+        )
+
+        import time
+        # Try current models: gemini-3.6-flash, gemini-3.7-flash, gemini-3.5-flash-lite
+        models_to_try = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"]
+        response = None
+        last_error = None
+        
+        for model_name in models_to_try:
+            for attempt in range(2):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=user_prompt,
+                        config=config
+                    )
+                    if response and response.text:
+                        break
+                except Exception as merr:
+                    last_error = merr
+                    err_str = str(merr)
+                    try:
+                        print(f"Model {model_name} attempt {attempt+1} failed: {err_str[:120]}")
+                    except Exception:
+                        pass
+                    if "503" in err_str or "high demand" in err_str or "UNAVAILABLE" in err_str:
+                        time.sleep(2)
+                    else:
+                        break
+            if response and response.text:
+                break
+                
+        if not response or not response.text:
+            raise last_error or Exception("No se obtuvo respuesta de ninguno de los modelos de Gemini.")
+
+        raw_response = response.text.strip()
+        
+        # Clean potential markdown wrapping if present
+        if raw_response.startswith("```json"):
+            raw_response = raw_response[7:]
+        if raw_response.startswith("```"):
+            raw_response = raw_response[3:]
+        if raw_response.endswith("```"):
+            raw_response = raw_response[:-3]
+        raw_response = raw_response.strip()
+
+        try:
+            result_data = robust_parse_json(raw_response)
+        except Exception as pe:
             try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+                print(f"Error parsing JSON from Gemini: {pe}")
             except Exception:
                 pass
+            return jsonify({
+                "success": False,
+                "error": f"La IA generó una respuesta pero ocurrió un problema al estructurar los datos ({str(pe)}). Intenta nuevamente.",
+                "raw": raw_response[:400]
+            }), 500
+
+        result_data["sources"] = collected_sources
+        result_data["video_metadata"] = video_metadata
+        
+        return jsonify({
+            "success": True,
+            "data": result_data
+        })
+
+    except Exception as e:
+        safe_msg = str(e)
+        try:
+            print(f"Error calling Gemini API: {safe_msg}")
+        except Exception:
+            pass
+        return jsonify({
+            "success": False,
+            "error": f"Error en la llamada a la IA de Gemini: {safe_msg}"
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))

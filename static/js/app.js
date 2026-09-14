@@ -7,10 +7,10 @@
 document.addEventListener('DOMContentLoaded', () => {
     // State management
     const state = {
+        hasApiKey: false,
         activeTab: 'tab-notes',
         selectedVideos: [],
         selectedFiles: [],
-        selectedAudios: [],
         currentResult: null,
         flashcards: [],
         currentFlashcardIndex: 0,
@@ -25,7 +25,17 @@ document.addEventListener('DOMContentLoaded', () => {
         loadingView: document.getElementById('loading-view'),
         resultsView: document.getElementById('results-view'),
 
-        // Nav & Theme
+        // Nav & Modals
+        btnApiKey: document.getElementById('btn-api-key'),
+        keyStatusText: document.getElementById('key-status-text'),
+        keyIndicator: document.getElementById('key-indicator'),
+        modalApiKey: document.getElementById('modal-api-key'),
+        btnCloseModal: document.getElementById('btn-close-modal'),
+        btnCancelKey: document.getElementById('btn-cancel-key'),
+        btnSaveKey: document.getElementById('btn-save-key'),
+        inputApiKey: document.getElementById('input-api-key'),
+        btnToggleKeyVis: document.getElementById('btn-toggle-key-vis'),
+        keyMessageBox: document.getElementById('key-message-box'),
         btnThemeToggle: document.getElementById('btn-theme-toggle'),
 
         // Form & Inputs
@@ -33,24 +43,10 @@ document.addEventListener('DOMContentLoaded', () => {
         youtubeUrl: document.getElementById('youtube-url'),
         btnAddYt: document.getElementById('btn-add-yt'),
         ytCountBadge: document.getElementById('yt-count-badge'),
-        btnClearYt: document.getElementById('btn-clear-yt'),
         ytVideosList: document.getElementById('yt-videos-list'),
-        ytFallbackBanner: document.getElementById('yt-fallback-banner'),
-        btnFallbackAudio: document.getElementById('btn-fallback-audio'),
-        btnFallbackPdf: document.getElementById('btn-fallback-pdf'),
-        btnFallbackNotes: document.getElementById('btn-fallback-notes'),
-        audioCard: document.getElementById('audio-card'),
-        audioDropzone: document.getElementById('audio-dropzone'),
-        audioFileInput: document.getElementById('audio-files'),
-        audioCountBadge: document.getElementById('audio-count-badge'),
-        btnClearAudio: document.getElementById('btn-clear-audio'),
-        audioList: document.getElementById('audio-list'),
         pdfDropzone: document.getElementById('pdf-dropzone'),
         pdfFileInput: document.getElementById('pdf-files'),
-        pdfCountBadge: document.getElementById('pdf-count-badge'),
-        btnClearPdf: document.getElementById('btn-clear-pdf'),
         fileList: document.getElementById('file-list'),
-        manualTextInput: document.getElementById('manual-text'),
         instructionsInput: document.getElementById('instructions'),
         btnGenerate: document.getElementById('btn-generate'),
 
@@ -120,412 +116,82 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --------------------------------------------------------------------------
-    // 1. Google Gemini API Key Management & Configuration
+    // 1. App Initialization & API Key
     // --------------------------------------------------------------------------
-    const API_KEY_STORAGE_KEY = 'gemini_api_key';
-
-    function getStoredApiKey() {
-        return (localStorage.getItem(API_KEY_STORAGE_KEY) || '').trim();
-    }
-
-    function setStoredApiKey(key) {
-        if (!key) {
-            localStorage.removeItem(API_KEY_STORAGE_KEY);
-        } else {
-            localStorage.setItem(API_KEY_STORAGE_KEY, key.trim());
-        }
-        updateApiKeyUI();
-    }
-
-    async function checkApiKeyStatus() {
+    async function checkStatus() {
         try {
-            const storedKey = getStoredApiKey();
-            const res = await fetch('/api/health-gemini', {
-                headers: storedKey ? { 'X-Gemini-Api-Key': storedKey } : {}
+            const res = await fetch('/api/status');
+            const data = await res.json();
+            state.hasApiKey = data.has_api_key;
+            updateKeyIndicator();
+        } catch (e) {
+            console.error('Error checking status:', e);
+        }
+    }
+
+    function updateKeyIndicator() {
+        if (state.hasApiKey) {
+            elements.keyIndicator.classList.add('active');
+            elements.keyStatusText.textContent = 'API Key Lista';
+        } else {
+            elements.keyIndicator.classList.remove('active');
+            elements.keyStatusText.textContent = 'Configurar API Key';
+        }
+    }
+
+    // API Key Modal Handlers
+    elements.btnApiKey.addEventListener('click', () => {
+        elements.keyMessageBox.className = 'message-box hidden';
+        elements.modalApiKey.classList.remove('hidden');
+    });
+
+    elements.btnCloseModal.addEventListener('click', () => {
+        elements.modalApiKey.classList.add('hidden');
+    });
+
+    elements.btnCancelKey.addEventListener('click', () => {
+        elements.modalApiKey.classList.add('hidden');
+    });
+
+    elements.btnToggleKeyVis.addEventListener('click', () => {
+        const type = elements.inputApiKey.type === 'password' ? 'text' : 'password';
+        elements.inputApiKey.type = type;
+        elements.btnToggleKeyVis.querySelector('i').className = type === 'password' ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
+    });
+
+    elements.btnSaveKey.addEventListener('click', async () => {
+        const key = elements.inputApiKey.value.trim();
+        if (!key) {
+            showKeyMessage('Por favor ingresa una clave válida.', 'error');
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/save-key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiKey: key })
             });
             const data = await res.json();
-            const hasKey = !!storedKey || !!data.configured;
-            updateApiKeyUI(hasKey);
-        } catch (e) {
-            updateApiKeyUI(!!getStoredApiKey());
-        }
-    }
-
-    function updateApiKeyUI(isConfigured = null) {
-        const key = getStoredApiKey();
-        const btnKey = document.getElementById('btn-api-key');
-        const statusText = document.getElementById('key-status-text');
-        const indicator = document.getElementById('key-indicator');
-
-        if (isConfigured === null) {
-            isConfigured = key.length >= 20;
-        }
-
-        if (indicator) {
-            if (isConfigured) {
-                indicator.className = 'status-dot status-active';
-                if (statusText) statusText.textContent = 'Gemini Lista';
-                if (btnKey) btnKey.title = 'Tu API Key de Gemini está configurada. Haz clic para modificarla.';
+            if (data.success) {
+                state.hasApiKey = true;
+                updateKeyIndicator();
+                showKeyMessage('¡Clave guardada con éxito!', 'success');
+                setTimeout(() => {
+                    elements.modalApiKey.classList.add('hidden');
+                    elements.inputApiKey.value = '';
+                }, 1000);
             } else {
-                indicator.className = 'status-dot status-inactive';
-                if (statusText) statusText.textContent = 'Configurar Gemini';
-                if (btnKey) btnKey.title = 'Configura tu clave gratuita de Gemini para generar apuntes.';
-            }
-        }
-    }
-
-    function openApiKeyModal() {
-        const modal = document.getElementById('modal-api-key');
-        const input = document.getElementById('input-api-key');
-        const msgBox = document.getElementById('key-message-box');
-        if (input) input.value = getStoredApiKey();
-        if (msgBox) {
-            msgBox.className = 'message-box hidden';
-            msgBox.textContent = '';
-        }
-        if (modal) {
-            modal.classList.remove('hidden');
-        }
-    }
-
-    function closeApiKeyModal() {
-        const modal = document.getElementById('modal-api-key');
-        if (modal) modal.classList.add('hidden');
-    }
-
-    // Connect modal elements
-    const btnApiKey = document.getElementById('btn-api-key');
-    if (btnApiKey) btnApiKey.addEventListener('click', openApiKeyModal);
-
-    const btnCloseModal = document.getElementById('btn-close-modal');
-    if (btnCloseModal) btnCloseModal.addEventListener('click', closeApiKeyModal);
-
-    const btnCancelKey = document.getElementById('btn-cancel-key');
-    if (btnCancelKey) btnCancelKey.addEventListener('click', closeApiKeyModal);
-
-    const modalApiKey = document.getElementById('modal-api-key');
-    if (modalApiKey) {
-        modalApiKey.addEventListener('click', (e) => {
-            if (e.target === modalApiKey) closeApiKeyModal();
-        });
-    }
-
-    const btnToggleVis = document.getElementById('btn-toggle-key-vis');
-    if (btnToggleVis) {
-        btnToggleVis.addEventListener('click', () => {
-            const input = document.getElementById('input-api-key');
-            if (input) {
-                const isPass = input.type === 'password';
-                input.type = isPass ? 'text' : 'password';
-                btnToggleVis.querySelector('i').className = isPass ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
-            }
-        });
-    }
-
-    const btnSaveKey = document.getElementById('btn-save-key');
-    if (btnSaveKey) {
-        btnSaveKey.addEventListener('click', () => {
-            const input = document.getElementById('input-api-key');
-            const msgBox = document.getElementById('key-message-box');
-            const val = (input ? input.value : '').trim();
-
-            if (!val) {
-                setStoredApiKey('');
-                if (msgBox) {
-                    msgBox.className = 'message-box error';
-                    msgBox.textContent = 'Clave eliminada. Se utilizará la clave del servidor si está configurada.';
-                    msgBox.classList.remove('hidden');
-                }
-                showToast('Clave eliminada.', 'info');
-                setTimeout(closeApiKeyModal, 1000);
-                return;
-            }
-
-            if (val.length < 20) {
-                if (msgBox) {
-                    msgBox.className = 'message-box error';
-                    msgBox.textContent = 'La clave parece demasiado corta. Las claves de Gemini suelen tener más de 30 caracteres (empiezan con AIzaSy... o AQ...).';
-                    msgBox.classList.remove('hidden');
-                }
-                return;
-            }
-
-            setStoredApiKey(val);
-            if (msgBox) {
-                msgBox.className = 'message-box success';
-                msgBox.textContent = '¡Clave guardada con éxito en tu navegador!';
-                msgBox.classList.remove('hidden');
-            }
-            showToast('¡Clave de Gemini guardada correctamente!', 'success');
-            setTimeout(closeApiKeyModal, 800);
-        });
-    }
-
-    // Check status on load
-    checkApiKeyStatus();
-
-    if (window.pdfjsLib) {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    }
-
-    async function extractPdfTextInBrowser(file) {
-        if (!window.pdfjsLib) {
-            return { filename: file.name, pages: 1, text: '' };
-        }
-        try {
-            const arrayBuffer = await file.arrayBuffer();
-            const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-            const pdf = await loadingTask.promise;
-            const numPages = pdf.numPages;
-            let fullText = '';
-            
-            for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-                const page = await pdf.getPage(pageNum);
-                const textContent = await page.getTextContent();
-                const pageStrings = textContent.items.map(item => item.str).join(' ');
-                if (pageStrings.trim()) {
-                    fullText += `\n--- [Página ${pageNum} / ${numPages}] ---\n${pageStrings}\n`;
-                }
-            }
-            
-            return {
-                filename: file.name,
-                pages: numPages,
-                text: fullText.trim()
-            };
-        } catch (e) {
-            console.warn(`Error al extraer texto en navegador de ${file.name}:`, e);
-            return { filename: file.name, pages: 1, text: '' };
-        }
-    }
-
-    class YouTubeCaptionError extends Error {
-        constructor(code, message, details = {}) {
-            super(message);
-            this.name = 'YouTubeCaptionError';
-            this.code = code;
-            this.details = details;
-        }
-    }
-
-    function parseYouTubeTranscriptXml(xmlText) {
-        if (!xmlText) return { fullText: '', timedText: '', durationSeconds: 0, snippetCount: 0 };
-
-        function decodeEntities(str) {
-            return str
-                .replace(/&amp;/g, '&')
-                .replace(/&lt;/g, '<')
-                .replace(/&gt;/g, '>')
-                .replace(/&quot;/g, '"')
-                .replace(/&#39;/g, "'")
-                .replace(/&#x27;/g, "'")
-                .replace(/\n/g, ' ')
-                .trim();
-        }
-
-        const snippets = [];
-        const fullTextPieces = [];
-        let maxSeconds = 0;
-
-        // Try standard browser DOMParser first
-        try {
-            if (typeof window !== 'undefined' && window.DOMParser) {
-                const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-                
-                // Format 1 (<text start="0.0" dur="2.0">Hello</text>)
-                const textNodes = doc.querySelectorAll('text');
-                if (textNodes && textNodes.length > 0) {
-                    textNodes.forEach(node => {
-                        const start = parseFloat(node.getAttribute('start')) || 0;
-                        const text = decodeEntities(node.textContent || '');
-                        if (text) {
-                            if (start > maxSeconds) maxSeconds = start;
-                            const mm = String(Math.floor(start / 60)).padStart(2, '0');
-                            const ss = String(Math.floor(start % 60)).padStart(2, '0');
-                            snippets.push(`[${mm}:${ss}] ${text}`);
-                            fullTextPieces.push(text);
-                        }
-                    });
-                    if (fullTextPieces.length > 0) {
-                        return {
-                            fullText: fullTextPieces.join(' '),
-                            timedText: snippets.join('\n'),
-                            durationSeconds: Math.ceil(maxSeconds),
-                            snippetCount: snippets.length
-                        };
-                    }
-                }
-
-                // Format 3 (ASR <p t="13900" d="5780"><s>bueno</s><s> buenas</s></p>)
-                const pNodes = doc.querySelectorAll('p');
-                if (pNodes && pNodes.length > 0) {
-                    pNodes.forEach(node => {
-                        const tMs = parseInt(node.getAttribute('t'), 10) || 0;
-                        const startSec = tMs / 1000;
-                        const sNodes = node.querySelectorAll('s');
-                        let segText = '';
-                        if (sNodes && sNodes.length > 0) {
-                            segText = Array.from(sNodes).map(s => s.textContent || '').join('');
-                        } else {
-                            segText = node.textContent || '';
-                        }
-                        segText = decodeEntities(segText);
-                        if (segText) {
-                            if (startSec > maxSeconds) maxSeconds = startSec;
-                            const mm = String(Math.floor(startSec / 60)).padStart(2, '0');
-                            const ss = String(Math.floor(startSec % 60)).padStart(2, '0');
-                            snippets.push(`[${mm}:${ss}] ${segText}`);
-                            fullTextPieces.push(segText);
-                        }
-                    });
-                    if (fullTextPieces.length > 0) {
-                        return {
-                            fullText: fullTextPieces.join(' '),
-                            timedText: snippets.join('\n'),
-                            durationSeconds: Math.ceil(maxSeconds),
-                            snippetCount: snippets.length
-                        };
-                    }
-                }
+                showKeyMessage(data.error || 'Error al guardar la clave.', 'error');
             }
         } catch (e) {
-            console.warn('DOMParser fallback to Regex parser:', e);
+            showKeyMessage('Error de conexión al guardar la clave.', 'error');
         }
+    });
 
-        // Regex fallback
-        const reText = /<text\b[^>]*\bstart="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g;
-        const reP = /<p\b[^>]*\bt="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
-        const reS = /<s[^>]*>([\s\S]*?)<\/s>/g;
-
-        let match;
-        let format1Found = false;
-        while ((match = reText.exec(xmlText)) !== null) {
-            format1Found = true;
-            const startSec = parseFloat(match[1]) || 0;
-            const text = decodeEntities(match[2].replace(/<[^>]+>/g, ''));
-            if (text) {
-                if (startSec > maxSeconds) maxSeconds = startSec;
-                const mm = String(Math.floor(startSec / 60)).padStart(2, '0');
-                const ss = String(Math.floor(startSec % 60)).padStart(2, '0');
-                snippets.push(`[${mm}:${ss}] ${text}`);
-                fullTextPieces.push(text);
-            }
-        }
-
-        if (!format1Found) {
-            while ((match = reP.exec(xmlText)) !== null) {
-                const startMs = parseInt(match[1], 10) || 0;
-                const startSec = startMs / 1000;
-                const inner = match[2];
-                let segmentText = '';
-
-                const sMatches = [...inner.matchAll(reS)];
-                if (sMatches.length > 0) {
-                    segmentText = sMatches.map(m => m[1]).join('');
-                } else {
-                    segmentText = inner.replace(/<[^>]+>/g, '');
-                }
-                segmentText = decodeEntities(segmentText);
-
-                if (segmentText) {
-                    if (startSec > maxSeconds) maxSeconds = startSec;
-                    const mm = String(Math.floor(startSec / 60)).padStart(2, '0');
-                    const ss = String(Math.floor(startSec % 60)).padStart(2, '0');
-                    snippets.push(`[${mm}:${ss}] ${segmentText}`);
-                    fullTextPieces.push(segmentText);
-                }
-            }
-        }
-
-        return {
-            fullText: fullTextPieces.join(' '),
-            timedText: snippets.join('\n'),
-            durationSeconds: Math.ceil(maxSeconds),
-            snippetCount: snippets.length
-        };
-    }
-
-    async function fetchYouTubeTranscript(video) {
-        let tracks = video.caption_tracks || [];
-
-        // If tracks were not loaded during preview, fetch them now
-        if (!tracks || tracks.length === 0) {
-            try {
-                const resp = await fetch(`/api/youtube-tracks?videoId=${video.id || encodeURIComponent(video.url)}`);
-                const data = await resp.json();
-                if (data.success && data.caption_tracks) {
-                    tracks = data.caption_tracks;
-                }
-            } catch (e) {
-                console.warn('Error fetching tracks for video:', video.url, e);
-            }
-        }
-
-        // 1. IF SUBTITLES EXIST: Try direct download from browser client
-        if (tracks && tracks.length > 0) {
-            const selectedTrack = tracks.find(t => 
-                !t.is_api && (
-                    t.language_code === 'es' || 
-                    t.language_code.startsWith('es-') ||
-                    (t.name && t.name.toLowerCase().includes('spanish')) ||
-                    (t.name && t.name.toLowerCase().includes('español'))
-                )
-            ) || tracks.find(t => !t.is_api);
-
-            if (selectedTrack && selectedTrack.base_url) {
-                try {
-                    const res = await fetch(selectedTrack.base_url);
-                    if (res.ok) {
-                        const xmlText = await res.text();
-                        if (xmlText && xmlText.trim()) {
-                            const parsed = parseYouTubeTranscriptXml(xmlText);
-                            if (parsed.fullText && parsed.snippetCount > 0) {
-                                return {
-                                    title: video.title || 'Video de YouTube',
-                                    videoId: video.id,
-                                    thumbnail: video.thumbnail,
-                                    fullText: parsed.fullText,
-                                    timedText: parsed.timedText,
-                                    hasCaptions: true
-                                };
-                            }
-                        }
-                    }
-                } catch (fetchErr) {
-                    console.warn('Fallo al descargar subtítulos directos XML en cliente:', fetchErr);
-                }
-            }
-        }
-
-        // 2. BACKEND TRANSCRIPT API FALLBACK: Retrieve direct subtitles without downloading media
-        try {
-            const tRes = await fetch(`/api/youtube-transcript?videoId=${video.id || encodeURIComponent(video.url)}`);
-            if (tRes.ok) {
-                const tData = await tRes.json();
-                if (tData.success && tData.full_text) {
-                    return {
-                        title: video.title || 'Video de YouTube',
-                        videoId: video.id,
-                        thumbnail: video.thumbnail,
-                        fullText: tData.full_text,
-                        timedText: tData.timed_text || tData.full_text,
-                        hasCaptions: true
-                    };
-                }
-            }
-        } catch (tErr) {
-            console.warn('Backend transcript API not available:', tErr);
-        }
-
-        // 3. Video without subtitles: Google Gemini backend will analyze it natively!
-        return {
-            title: video.title || 'Video de YouTube',
-            videoId: video.id,
-            thumbnail: video.thumbnail,
-            fullText: null,
-            timedText: null,
-            hasCaptions: false
-        };
+    function showKeyMessage(msg, type) {
+        elements.keyMessageBox.textContent = msg;
+        elements.keyMessageBox.className = `message-box ${type}`;
     }
 
     // Demo button handler
@@ -601,15 +267,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         title: data.title,
                         author: data.author,
                         thumbnail: data.thumbnail,
-                        fallback_thumbnail: data.fallback_thumbnail,
-                        has_captions: data.has_captions,
-                        has_audio: data.has_audio,
-                        caption_tracks: data.caption_tracks || []
+                        fallback_thumbnail: data.fallback_thumbnail
                     });
                     addedCount++;
-                    if (data.has_captions === false) {
-                        showToast(`"${data.title || rawUrl}" agregado. Sin subtítulos: su audio se transcribirá con IA automáticamente.`, 'info');
-                    }
                 } else {
                     showToast(`No se pudo verificar el video "${rawUrl}": ${data.error || 'Enlace inválido'}`, 'warning');
                 }
@@ -630,26 +290,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (count === 0) {
             elements.ytVideosList.classList.add('hidden');
             elements.ytCountBadge.classList.add('hidden');
-            if (elements.btnClearYt) elements.btnClearYt.classList.add('hidden');
             elements.ytVideosList.innerHTML = '';
-            if (elements.ytFallbackBanner) elements.ytFallbackBanner.classList.add('hidden');
             return;
         }
 
         elements.ytCountBadge.textContent = `${count} ${count === 1 ? 'video' : 'videos'}`;
         elements.ytCountBadge.classList.remove('hidden');
-        if (elements.btnClearYt) elements.btnClearYt.classList.remove('hidden');
         elements.ytVideosList.classList.remove('hidden');
-
-        // Toggle fallback banner if any video is missing captions
-        const hasMissingCaptions = state.selectedVideos.some(v => v.has_captions === false);
-        if (elements.ytFallbackBanner) {
-            if (hasMissingCaptions) {
-                elements.ytFallbackBanner.classList.remove('hidden');
-            } else {
-                elements.ytFallbackBanner.classList.add('hidden');
-            }
-        }
 
         elements.ytVideosList.innerHTML = state.selectedVideos.map((vid, idx) => `
             <div class="yt-video-item" data-idx="${idx}">
@@ -659,9 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="yt-video-meta">
                         <span class="badge-order">Parte #${idx + 1}</span>
                         <span>${escapeHtml(vid.author)}</span>
-                        ${vid.has_captions !== false 
-                            ? '<span class="badge-success"><i class="fa-solid fa-closed-captioning"></i> Subtítulos listos</span>' 
-                            : '<span class="badge-ai" style="background:rgba(99,102,241,0.25);color:#a5b4fc;padding:2px 8px;border-radius:6px;font-size:0.75rem;border:1px solid rgba(99,102,241,0.3);"><i class="fa-solid fa-wand-magic-sparkles"></i> Transcripción por audio IA</span>'}
+                        <span class="badge-success"><i class="fa-solid fa-check"></i> Listo</span>
                     </div>
                 </div>
                 <button type="button" class="remove-item-btn remove-yt-btn" data-idx="${idx}" title="Eliminar este video">
@@ -678,129 +323,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.selectedVideos.splice(idx, 1);
                 updateYtList();
             });
-        });
-    }
-
-    if (elements.btnClearYt) {
-        elements.btnClearYt.addEventListener('click', () => {
-            state.selectedVideos = [];
-            updateYtList();
-            showToast('Lista de videos vaciada.', 'info');
-        });
-    }
-
-    // Connect banner rescue buttons
-    if (elements.btnFallbackAudio) {
-        elements.btnFallbackAudio.addEventListener('click', () => {
-            if (elements.audioFileInput) elements.audioFileInput.click();
-        });
-    }
-    if (elements.btnFallbackPdf) {
-        elements.btnFallbackPdf.addEventListener('click', () => {
-            if (elements.pdfFileInput) elements.pdfFileInput.click();
-        });
-    }
-    if (elements.btnFallbackNotes) {
-        elements.btnFallbackNotes.addEventListener('click', () => {
-            if (elements.manualTextInput) {
-                elements.manualTextInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                elements.manualTextInput.focus();
-            }
-        });
-    }
-
-    // Audio Files Drag & Drop and Input
-    if (elements.audioDropzone && elements.audioFileInput) {
-        elements.audioDropzone.addEventListener('click', () => {
-            elements.audioFileInput.click();
-        });
-
-        elements.audioDropzone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            elements.audioDropzone.classList.add('dragover');
-        });
-
-        elements.audioDropzone.addEventListener('dragleave', () => {
-            elements.audioDropzone.classList.remove('dragover');
-        });
-
-        elements.audioDropzone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            elements.audioDropzone.classList.remove('dragover');
-            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                handleAudioFiles(e.dataTransfer.files);
-            }
-        });
-
-        elements.audioFileInput.addEventListener('change', () => {
-            if (elements.audioFileInput.files && elements.audioFileInput.files.length > 0) {
-                handleAudioFiles(elements.audioFileInput.files);
-            }
-        });
-    }
-
-    function handleAudioFiles(files) {
-        for (let file of files) {
-            const ext = file.name.split('.').pop().toLowerCase();
-            const isAudio = file.type.startsWith('audio/') || ['mp3', 'wav', 'm4a', 'ogg', 'aac', 'webm'].includes(ext);
-            if (isAudio) {
-                if (!state.selectedAudios.some(a => a.name === file.name && a.size === file.size)) {
-                    state.selectedAudios.push(file);
-                }
-            } else {
-                showToast(`El archivo "${file.name}" no es un formato de audio soportado (.mp3, .wav, .m4a).`, 'warning');
-            }
-        }
-        updateAudioList();
-    }
-
-    function updateAudioList() {
-        const count = state.selectedAudios.length;
-        if (count === 0) {
-            if (elements.audioList) {
-                elements.audioList.classList.add('hidden');
-                elements.audioList.innerHTML = '';
-            }
-            if (elements.audioCountBadge) elements.audioCountBadge.classList.add('hidden');
-            if (elements.btnClearAudio) elements.btnClearAudio.classList.add('hidden');
-            return;
-        }
-
-        if (elements.audioCountBadge) {
-            elements.audioCountBadge.textContent = `${count} ${count === 1 ? 'audio' : 'audios'}`;
-            elements.audioCountBadge.classList.remove('hidden');
-        }
-        if (elements.btnClearAudio) elements.btnClearAudio.classList.remove('hidden');
-        if (elements.audioList) {
-            elements.audioList.classList.remove('hidden');
-            elements.audioList.innerHTML = state.selectedAudios.map((file, idx) => `
-                <div class="file-item">
-                    <div class="file-name">
-                        <i class="fa-solid fa-file-audio" style="color: #34d399;"></i>
-                        <span>${escapeHtml(file.name)} (${(file.size / (1024 * 1024)).toFixed(2)} MB)</span>
-                    </div>
-                    <button type="button" class="remove-item-btn remove-audio-btn" data-idx="${idx}" title="Eliminar">
-                        <i class="fa-solid fa-xmark"></i>
-                    </button>
-                </div>
-            `).join('');
-
-            document.querySelectorAll('.remove-audio-btn').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const idx = parseInt(btn.getAttribute('data-idx'));
-                    state.selectedAudios.splice(idx, 1);
-                    updateAudioList();
-                });
-            });
-        }
-    }
-
-    if (elements.btnClearAudio) {
-        elements.btnClearAudio.addEventListener('click', () => {
-            state.selectedAudios = [];
-            if (elements.audioFileInput) elements.audioFileInput.value = '';
-            updateAudioList();
-            showToast('Archivos de audio removidos.', 'info');
         });
     }
 
@@ -870,29 +392,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateFileList() {
-        const count = state.selectedFiles.length;
-        if (count === 0) {
+        if (state.selectedFiles.length === 0) {
             elements.fileList.classList.add('hidden');
-            if (elements.pdfCountBadge) elements.pdfCountBadge.classList.add('hidden');
-            if (elements.btnClearPdf) elements.btnClearPdf.classList.add('hidden');
             elements.fileList.innerHTML = '';
             return;
         }
 
-        if (elements.pdfCountBadge) {
-            elements.pdfCountBadge.textContent = `${count} ${count === 1 ? 'archivo' : 'archivos'}`;
-            elements.pdfCountBadge.classList.remove('hidden');
-        }
-        if (elements.btnClearPdf) elements.btnClearPdf.classList.remove('hidden');
         elements.fileList.classList.remove('hidden');
-
         elements.fileList.innerHTML = state.selectedFiles.map((file, idx) => `
             <div class="file-item">
                 <div class="file-name">
                     <i class="fa-solid fa-file-pdf"></i>
                     <span>${escapeHtml(file.name)} (${(file.size / (1024 * 1024)).toFixed(2)} MB)</span>
                 </div>
-                <button type="button" class="remove-item-btn remove-file-btn" data-idx="${idx}" title="Eliminar">
+                <button type="button" class="icon-btn remove-file-btn" data-idx="${idx}" title="Eliminar">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
@@ -907,15 +420,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    if (elements.btnClearPdf) {
-        elements.btnClearPdf.addEventListener('click', () => {
-            state.selectedFiles = [];
-            if (elements.pdfFileInput) elements.pdfFileInput.value = '';
-            updateFileList();
-            showToast('Archivos PDF removidos.', 'info');
-        });
-    }
-
     // Radio cards UI selection
     document.querySelectorAll('.radio-card').forEach(card => {
         card.addEventListener('click', () => {
@@ -926,7 +430,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --------------------------------------------------------------------------
-    // 3. Form Submission & Google Gemini AI Pipeline
+    // 3. Form Submission & Generation
     // --------------------------------------------------------------------------
     elements.generatorForm.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -937,143 +441,99 @@ document.addEventListener('DOMContentLoaded', () => {
             await processAndAddYouTubeUrls(pendingUrl);
         }
 
-        const manualText = (elements.manualTextInput?.value || '').trim();
         const hasVideos = state.selectedVideos.length > 0;
         const hasPdfs = state.selectedFiles.length > 0;
-        const hasAudios = (state.selectedAudios && state.selectedAudios.length > 0);
-        const hasManual = manualText.length > 0;
 
-        if (!hasVideos && !hasPdfs && !hasAudios && !hasManual) {
-            showToast('Por favor agrega un enlace de YouTube, sube un PDF, un audio o escribe apuntes de estudio.', 'error');
+        if (!hasVideos && !hasPdfs) {
+            showToast('Por favor agrega al menos un enlace de YouTube o sube un archivo PDF.', 'error');
             return;
         }
 
-        const currentApiKey = getStoredApiKey();
-
-        if (elements.btnGenerate) elements.btnGenerate.disabled = true;
+        if (!state.hasApiKey) {
+            elements.modalApiKey.classList.remove('hidden');
+            showKeyMessage('Debes ingresar tu Gemini API Key antes de generar apuntes.', 'error');
+            return;
+        }
 
         // Switch to loading view
         switchView('loading');
-        
-        // Progress stage 1: Preparing Materials
-        elements.progressBar.style.width = '25%';
-        elements.step1.className = 'step-item active';
-        elements.step2.className = 'step-item';
-        elements.step3.className = 'step-item';
-        elements.loadingStatusTitle.textContent = 'Preparando fuentes y materiales...';
-        elements.loadingStatusDesc.textContent = 'Verificando subtítulos de YouTube y preparando documentos...';
+        simulateProgress();
+
+        const formData = new FormData();
+        state.selectedVideos.forEach(vid => {
+            formData.append('youtubeUrls', vid.url);
+        });
+        formData.append('depth', document.querySelector('input[name="depth"]:checked').value);
+        formData.append('instructions', elements.instructionsInput.value.trim());
+
+        state.selectedFiles.forEach(file => {
+            formData.append('pdfFiles', file);
+        });
 
         try {
-            // Check client-side YouTube captions (direct timedtext download from user IP)
-            const clientTranscripts = {};
-            for (const vid of state.selectedVideos) {
-                elements.loadingStatusDesc.textContent = `Consultando subtítulos de "${vid.title || 'video'}"...`;
-                try {
-                    const tr = await fetchYouTubeTranscript(vid);
-                    if (tr && tr.fullText && tr.fullText.length > 30) {
-                        clientTranscripts[vid.id] = tr.fullText;
-                    }
-                } catch (e) {
-                    console.warn(`No se pudieron extraer subtítulos para ${vid.id} en cliente:`, e);
-                }
-            }
-
-            // Progress stage 2: Calling Google Gemini AI
-            elements.progressBar.style.width = '45%';
-            elements.step1.className = 'step-item completed';
-            elements.step2.className = 'step-item active';
-            const totalSources = state.selectedVideos.length + state.selectedFiles.length + (state.selectedAudios ? state.selectedAudios.length : 0) + (manualText ? 1 : 0);
-            if (totalSources > 1) {
-                elements.loadingStatusTitle.textContent = `Procesando ${totalSources} fuentes de forma independiente (Map-Reduce)...`;
-                elements.loadingStatusDesc.textContent = 'Analizando videos largos y materiales sin límites de duración con Google Gemini AI...';
-            } else {
-                elements.loadingStatusTitle.textContent = 'Generando apunte maestro con Google Gemini AI...';
-                elements.loadingStatusDesc.textContent = 'Gemini está sintetizando conceptos clave, deducciones, fórmulas KaTeX y diagramas Mermaid...';
-            }
-            simulateProgress(totalSources);
-
-            const selectedDepth = document.querySelector('input[name="depth"]:checked')?.value || 'completo';
-            const userInstructions = elements.instructionsInput ? elements.instructionsInput.value.trim() : '';
-
-            const formData = new FormData();
-            formData.append('depth', selectedDepth);
-            formData.append('instructions', userInstructions);
-            formData.append('notes_text', manualText);
-            formData.append('youtube_urls', JSON.stringify(state.selectedVideos.map(v => v.url)));
-            formData.append('client_transcripts', JSON.stringify(clientTranscripts));
-
-            for (const pdf of state.selectedFiles) {
-                formData.append('pdf_files', pdf);
-            }
-            for (const audio of state.selectedAudios) {
-                formData.append('audio_files', audio);
-            }
-            if (currentApiKey) {
-                formData.append('apiKey', currentApiKey);
-            }
-
             const response = await fetch('/api/generate-notes', {
                 method: 'POST',
-                headers: currentApiKey ? { 'X-Gemini-Api-Key': currentApiKey } : {},
                 body: formData
             });
 
-            const data = await response.json();
-
-            if (!response.ok || !data.success) {
-                if (response.status === 401 || data.needs_key) {
-                    switchView('input');
-                    openApiKeyModal();
-                    showToast(data.error || 'Por favor ingresa tu API Key gratuita de Google Gemini para continuar.', 'warning');
-                    return;
-                }
-                throw new Error(data.error || 'Ocurrió un error al generar los apuntes con Gemini.');
+            let data;
+            const textResponse = await response.text();
+            try {
+                data = JSON.parse(textResponse);
+            } catch (jsonErr) {
+                console.error('Server returned non-JSON response:', textResponse);
+                switchView('input');
+                showToast(`El servidor devolvió un error (código ${response.status}). Intenta nuevamente.`, 'error');
+                return;
             }
 
-            // Progress stage 3: Render
-            elements.progressBar.style.width = '100%';
-            elements.step2.className = 'step-item completed';
-            elements.step3.className = 'step-item completed';
-            elements.loadingStatusTitle.textContent = '¡Apunte estructurado!';
-            elements.loadingStatusDesc.textContent = 'Renderizando fórmulas KaTeX y mapas conceptuales...';
+            if (!data.success) {
+                switchView('input');
+                showToast(data.error || 'Error al generar el apunte.', 'error');
+                return;
+            }
 
+            // Success! Render notes
             state.currentResult = data.data;
             renderStudyMaterial(data.data);
             switchView('results');
-            showToast('¡Apunte generado con éxito con Google Gemini AI!', 'success');
 
         } catch (err) {
-            console.error('Error durante la generación:', err);
+            console.error('Error during generation:', err);
             switchView('input');
-            showToast(err.message || 'Error al generar el apunte con Gemini. Intenta nuevamente.', 'error');
-        } finally {
-            if (elements.btnGenerate) elements.btnGenerate.disabled = false;
+            showToast('Error de conexión con el servidor. Verifica que esté en ejecución.', 'error');
         }
     });
 
     let progressInterval = null;
-    function simulateProgress(totalSources = 1) {
-        let pct = 45;
+    function simulateProgress() {
+        let pct = 10;
+        elements.progressBar.style.width = '10%';
+        elements.step1.className = 'step-item active';
+        elements.step2.className = 'step-item';
+        elements.step3.className = 'step-item';
+        elements.loadingStatusTitle.textContent = 'Extrayendo el material fuente...';
+        elements.loadingStatusDesc.textContent = 'Leyendo transcripciones de video y páginas del PDF.';
+
         clearInterval(progressInterval);
         progressInterval = setInterval(() => {
-            if (pct < 75) {
+            if (pct < 45) {
+                pct += 5;
+                elements.progressBar.style.width = `${pct}%`;
+            } else if (pct < 85) {
                 pct += 2;
                 elements.progressBar.style.width = `${pct}%`;
-                if (totalSources > 1) {
-                    elements.loadingStatusDesc.textContent = 'Analizando fuentes en paralelo y extrayendo deducciones con KaTeX...';
-                }
-            } else if (pct < 92) {
+                elements.step2.className = 'step-item active';
+                elements.loadingStatusTitle.textContent = 'Analizando y estructurando los apuntes...';
+                elements.loadingStatusDesc.textContent = 'Sintetizando conceptos clave, deducciones matemáticas y desarrollos.';
+            } else if (pct < 96) {
                 pct += 1;
                 elements.progressBar.style.width = `${pct}%`;
-                elements.step2.className = 'step-item active';
-                elements.loadingStatusTitle.textContent = 'Consolidando apunte maestro definitivo...';
-                elements.loadingStatusDesc.textContent = 'Generando diagramas conceptuales Mermaid, flashcards activas y examen de autoevaluación...';
-            } else if (pct < 98) {
-                pct += 0.5;
-                elements.progressBar.style.width = `${pct}%`;
                 elements.step3.className = 'step-item active';
+                elements.loadingStatusTitle.textContent = 'Generando diagramas visuales y quiz...';
+                elements.loadingStatusDesc.textContent = 'Construyendo flashcards interactivas y mapas conceptuales.';
             }
-        }, 750);
+        }, 600);
     }
 
     function switchView(viewName) {
@@ -1502,4 +962,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 4000);
     }
 
+    // Startup check
+    checkStatus();
 });

@@ -37,7 +37,7 @@
                 </div>
                 <div class="brand-text">
                     <span class="brand-name">Apuntes<span>IA</span></span>
-                    <span class="brand-tagline">Estudio Inteligente con IA Multi-Modelo</span>
+                    <span class="brand-tagline">Estudio Inteligente con Gemini</span>
                 </div>
             </div>
 
@@ -46,9 +46,9 @@
                     <i class="fa-solid fa-sparkles"></i>
                     <span>Ver Apunte de Ejemplo</span>
                 </button>
-                <button type="button" id="btn-api-key" class="btn-secondary nav-btn" title="Configurar tu clave Gemini">
+                <button id="btn-api-key" class="btn-secondary nav-btn" title="Configurar clave Gemini">
                     <i class="fa-solid fa-key"></i>
-                    <span id="key-status-text">Clave Gemini</span>
+                    <span id="key-status-text">Configurar API Key</span>
                     <span id="key-indicator" class="status-dot"></span>
                 </button>
                 <button id="btn-theme-toggle" class="icon-btn" title="Cambiar tema">
@@ -67,7 +67,7 @@
                         Aprende 10x más rápido
                     </div>
                     <h1>Transforma videos y documentos en <span class="gradient-text">apuntes maestros</span></h1>
-                    <p class="hero-subtitle">Ingresa enlaces de YouTube o sube tus PDFs. La IA sintetizará conceptos clave, desarrollos paso a paso, fórmulas, diagramas visuales y flashcards sin límites de cuotas ni claves de API.</p>
+                    <p class="hero-subtitle">Ingresa un enlace de YouTube o sube tus PDFs. La IA sintetizará conceptos clave, desarrollos paso a paso, fórmulas, diagramas visuales y flashcards.</p>
                 </div>
 
                 <form id="generator-form" class="dashboard-grid">
@@ -82,12 +82,7 @@
                                 <div class="card-header-info">
                                     <div class="card-title-row">
                                         <h3>Videos de YouTube</h3>
-                                        <div class="card-header-actions">
-                                            <span id="yt-count-badge" class="badge-count hidden">0 videos</span>
-                                            <button type="button" id="btn-clear-yt" class="btn-clear-all hidden" title="Quitar todos los videos">
-                                                <i class="fa-solid fa-trash-can"></i> Limpiar
-                                            </button>
-                                        </div>
+                                        <span id="yt-count-badge" class="badge-count hidden">0 videos</span>
                                     </div>
                                     <p>Pega uno o varios enlaces (ej: Parte 1, Parte 2... o una lista de links)</p>
                                 </div>
@@ -108,48 +103,6 @@
                             <div id="yt-videos-list" class="yt-videos-list hidden">
                                 <!-- Populated dynamically with video cards -->
                             </div>
-
-                            <!-- Reassuring banner when a video has no pre-existing captions -->
-                            <div id="yt-fallback-banner" class="yt-fallback-banner hidden" style="background: rgba(99, 102, 241, 0.12); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 14px 16px; margin-top: 12px;">
-                                <div class="fallback-banner-header" style="display: flex; gap: 12px; align-items: flex-start;">
-                                    <i class="fa-solid fa-wand-magic-sparkles" style="color: #818cf8; font-size: 1.25rem; flex-shrink: 0; margin-top: 2px;"></i>
-                                    <div>
-                                        <h4 style="margin: 0; font-size: 0.92rem; font-weight: 600; color: #c7d2fe;">Transcripción por Audio IA activada</h4>
-                                        <p style="margin: 4px 0 0; font-size: 0.83rem; color: #cbd5e1; line-height: 1.45;">Este video no incluye subtítulos en YouTube, pero no te preocupes: el sistema extraerá su audio y la IA lo transcribirá automáticamente al generar tus apuntes.</p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Audio / Lecture Recording Card -->
-                        <div class="glass-card source-card audio-source-card" id="audio-card">
-                            <div class="card-header">
-                                <div class="card-icon" style="background: rgba(16, 185, 129, 0.15); color: #34d399; width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">
-                                    <i class="fa-solid fa-microphone-lines"></i>
-                                </div>
-                                <div class="card-header-info">
-                                    <div class="card-title-row">
-                                        <h3>Grabación de Audio / Clase</h3>
-                                        <div class="card-header-actions">
-                                            <span id="audio-count-badge" class="badge-count hidden">0 audios</span>
-                                            <button type="button" id="btn-clear-audio" class="btn-clear-all hidden" title="Quitar audios">
-                                                <i class="fa-solid fa-trash-can"></i> Limpiar
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <p>Sube notas de voz o audios (.mp3, .wav, .m4a) con transcripción por IA</p>
-                                </div>
-                            </div>
-
-                            <div class="dropzone" id="audio-dropzone">
-                                <input type="file" id="audio-files" name="audioFiles" accept="audio/*,.mp3,.wav,.m4a,.ogg,.aac,.webm" multiple hidden>
-                                <i class="fa-solid fa-file-audio drop-icon" style="color: #34d399;"></i>
-                                <p class="drop-title">Arrastra tus grabaciones de audio aquí</p>
-                                <p class="drop-hint">o haz clic para explorar (.mp3, .wav, .m4a)</p>
-                            </div>
-
-                            <!-- Selected audio files list -->
-                            <div id="audio-list" class="file-list hidden"></div>
                         </div>
 
                         <!-- PDF Upload Card -->
@@ -158,16 +111,8 @@
                                 <div class="card-icon pdf-icon">
                                     <i class="fa-solid fa-file-pdf"></i>
                                 </div>
-                                <div class="card-header-info">
-                                    <div class="card-title-row">
-                                        <h3>Documentos y Lecturas (PDF)</h3>
-                                        <div class="card-header-actions">
-                                            <span id="pdf-count-badge" class="badge-count hidden">0 archivos</span>
-                                            <button type="button" id="btn-clear-pdf" class="btn-clear-all hidden" title="Quitar todos los PDFs">
-                                                <i class="fa-solid fa-trash-can"></i> Limpiar
-                                            </button>
-                                        </div>
-                                    </div>
+                                <div>
+                                    <h3>Documentos y Lecturas (PDF)</h3>
                                     <p>Libros de texto, diapositivas o resúmenes</p>
                                 </div>
                             </div>
@@ -181,25 +126,6 @@
 
                             <!-- Selected files list -->
                             <div id="file-list" class="file-list hidden"></div>
-                        </div>
-
-                        <!-- Manual Notes / Transcript Fallback Card -->
-                        <div class="glass-card source-card manual-text-card">
-                            <div class="card-header">
-                                <div class="card-icon" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">
-                                    <i class="fa-solid fa-align-left"></i>
-                                </div>
-                                <div class="card-header-info">
-                                    <div class="card-title-row">
-                                        <h3>Texto o Transcripción Manual</h3>
-                                        <span class="label-badge">Opcional</span>
-                                    </div>
-                                    <p>Pega apuntes de clase o texto copiado de YouTube ("Mostrar transcripción")</p>
-                                </div>
-                            </div>
-                            <div class="input-group" style="margin-top: 10px;">
-                                <textarea id="manual-text" rows="3" placeholder="Pega aquí transcripciones de audio, texto de diapositivas o apuntes de clase..." style="width: 100%; border-radius: 8px; resize: vertical; padding: 10px 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: var(--text-primary); font-family: inherit; font-size: 0.9rem; line-height: 1.4;"></textarea>
-                            </div>
                         </div>
                     </div>
 
@@ -247,15 +173,6 @@
                                 <textarea id="instructions" name="instructions" rows="3" placeholder="Ej: 'Presta especial atención al teorema central', 'Desarrolla en detalle los pasos del ejercicio', o 'Explícalo como para principiantes'..."></textarea>
                             </div>
 
-                            <!-- Gemini Notice -->
-                            <div class="key-help-box" style="margin-top: 10px; margin-bottom: 0;">
-                                <i class="fa-solid fa-shield-halved" style="color: var(--primary); font-size: 1.1rem; margin-top: 2px;"></i>
-                                <div style="font-size: 0.82rem; color: var(--text-muted);">
-                                    <strong style="color: var(--text-main); display: block;">Espacio de estudio 100% privado:</strong>
-                                    Tus apuntes son procesados con tu propia IA de Google Gemini.
-                                </div>
-                            </div>
-
                             <!-- Generate CTA -->
                             <div class="action-box">
                                 <button type="submit" id="btn-generate" class="btn-primary btn-cta">
@@ -264,7 +181,7 @@
                                         <span>Generar Apunte Inteligente</span>
                                     </span>
                                 </button>
-                                <p class="cta-notice"><i class="fa-solid fa-shield-halved"></i> Análisis directo en tu navegador con Puter.js — 100% privado y seguro.</p>
+                                <p class="cta-notice"><i class="fa-solid fa-shield-halved"></i> Análisis directo en memoria sin almacenar tus datos privados.</p>
                             </div>
                         </div>
                     </div>
@@ -484,32 +401,34 @@
                         <i class="fa-solid fa-key icon-accent"></i>
                         <h3>Configuración de Gemini API Key</h3>
                     </div>
-                    <button id="btn-close-modal" class="icon-btn" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+                    <button id="btn-close-modal" class="icon-btn"><i class="fa-solid fa-xmark"></i></button>
                 </div>
 
                 <div class="modal-body">
-                    <p class="modal-text">Para que la IA sintetice apuntes, fórmulas y flashcards de tus videos y PDFs, usa tu clave oficial gratuita de Google Gemini.</p>
+                    <p class="modal-text">Para sintetizar videos y documentos con la mayor precisión, ingresa tu clave gratuita de Google Gemini (Google AI Studio).</p>
                     
-                    <div class="key-help-box key-cta-box" style="background: rgba(99, 102, 241, 0.12); border-color: rgba(99, 102, 241, 0.35); padding: 1rem;">
-                        <i class="fa-solid fa-gift" style="font-size: 1.4rem; color: #a5b4fc;"></i>
+                    <div class="input-field">
+                        <label for="input-api-key">Gemini API Key</label>
+                        <div class="input-with-icon">
+                            <i class="fa-solid fa-lock"></i>
+                            <input type="password" id="input-api-key" placeholder="AIzaSy..." autocomplete="off">
+                            <button type="button" id="btn-toggle-key-vis" class="icon-btn-inline" title="Mostrar/ocultar">
+                                <i class="fa-solid fa-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="key-help-box">
+                        <i class="fa-solid fa-circle-info"></i>
                         <div>
-                            <strong style="color: #ffffff; display: block; margin-bottom: 0.25rem;">Es 100% gratuita y toma 10 segundos:</strong>
-                            <p style="font-size: 0.82rem; margin-bottom: 0.6rem; color: var(--text-muted);">Entra con tu cuenta de Google (Gmail), presiona "Create API key" y copia tu clave (comienza con <code>AIzaSy...</code> o <code>AQ...</code>).</p>
-                            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="btn-get-key" style="display: inline-flex; align-items: center; gap: 0.4rem; background: var(--primary-gradient); color: #fff; padding: 0.45rem 0.9rem; border-radius: var(--radius-sm); font-size: 0.85rem; font-weight: 600; text-decoration: none;">
-                                <i class="fa-solid fa-arrow-up-right-from-square"></i> Obtener Clave Gratis en Google AI Studio
+                            <span>¿No tienes una clave todavía?</span>
+                            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">
+                                Obtén tu clave gratuita en Google AI Studio <i class="fa-solid fa-arrow-up-right-from-square"></i>
                             </a>
                         </div>
                     </div>
 
-                    <div class="input-field" style="margin-top: 1.2rem;">
-                        <label for="input-api-key">Pega aquí tu clave gratuita de Gemini:</label>
-                        <div class="input-with-icon" style="position: relative; display: flex; align-items: center;">
-                            <i class="fa-solid fa-key" style="position: absolute; left: 0.9rem; color: var(--text-dim);"></i>
-                            <input type="password" id="input-api-key" placeholder="AIzaSy... o AQ..." autocomplete="off" style="padding-left: 2.4rem; padding-right: 2.5rem; width: 100%;">
-                            <button type="button" id="btn-toggle-key-vis" class="icon-btn-inline" title="Mostrar/Ocultar clave"><i class="fa-solid fa-eye"></i></button>
-                        </div>
-                        <div id="key-message-box" class="message-box hidden"></div>
-                    </div>
+                    <div id="key-message-box" class="message-box hidden"></div>
                 </div>
 
                 <div class="modal-footer">
