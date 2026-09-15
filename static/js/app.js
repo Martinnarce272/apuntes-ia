@@ -7,8 +7,6 @@
 document.addEventListener('DOMContentLoaded', () => {
     // State management
     const state = {
-        hasApiKey: false,
-        currentUser: null,
         activeTab: 'tab-notes',
         selectedVideos: [],
         selectedFiles: [],
@@ -26,32 +24,9 @@ document.addEventListener('DOMContentLoaded', () => {
         loadingView: document.getElementById('loading-view'),
         resultsView: document.getElementById('results-view'),
 
-        // Nav & Google Auth Elements
-        btnGoogleLogin: document.getElementById('btn-google-login'),
-        userProfileChip: document.getElementById('user-profile-chip'),
-        userAvatarImg: document.getElementById('user-avatar-img'),
-        userNameText: document.getElementById('user-name-text'),
-        userEmailText: document.getElementById('user-email-text'),
+        // Nav & Controls
+        puterStatusChip: document.getElementById('puter-status-chip'),
         btnThemeToggle: document.getElementById('btn-theme-toggle'),
-
-        // Google Modal Elements
-        modalGoogleAuth: document.getElementById('modal-google-auth'),
-        btnCloseGoogleModal: document.getElementById('btn-close-google-modal'),
-        btnCloseGoogleModalFooter: document.getElementById('btn-close-google-modal-footer'),
-        authStateLoggedOut: document.getElementById('auth-state-logged-out'),
-        authStateLoggedIn: document.getElementById('auth-state-logged-in'),
-        gisRenderButton: document.getElementById('gis-render-button'),
-        formQuickGoogle: document.getElementById('form-quick-google'),
-        inputGoogleEmail: document.getElementById('input-google-email'),
-        inputGoogleName: document.getElementById('input-google-name'),
-        btnSubmitGoogleAuth: document.getElementById('btn-submit-google-auth'),
-        inputApiKey: document.getElementById('input-api-key'),
-        btnToggleKeyVis: document.getElementById('btn-toggle-key-vis'),
-        googleAuthMsg: document.getElementById('google-auth-msg'),
-        cardAvatarImg: document.getElementById('card-avatar-img'),
-        cardUserName: document.getElementById('card-user-name'),
-        cardUserEmail: document.getElementById('card-user-email'),
-        btnLogoutGoogle: document.getElementById('btn-logout-google'),
 
         // Form & Inputs
         generatorForm: document.getElementById('generator-form'),
@@ -131,254 +106,123 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --------------------------------------------------------------------------
-    // 1. App Initialization & Google Auth Management
+    // 1. Puter.js Gemini AI Integration & JSON Parsing
     // --------------------------------------------------------------------------
-    function openGoogleModal() {
-        if (!elements.modalGoogleAuth) return;
-        if (elements.googleAuthMsg) {
-            elements.googleAuthMsg.className = 'message-box hidden';
-            elements.googleAuthMsg.textContent = '';
+    const GEMINI_MODELS_PUTER = [
+        "google/gemini-3.8-flash",
+        "google/gemini-3.7-flash",
+        "google/gemini-3.6-flash",
+        "google/gemini-3.5-flash",
+        "gemini-2.5-flash"
+    ];
+
+    /**
+     * Llama a Puter.js chat iterando por los modelos de Gemini con fallback automático.
+     */
+    async function callPuterGeminiWithFallback(systemInstruction, userPrompt) {
+        if (typeof puter === 'undefined' || !puter.ai || !puter.ai.chat) {
+            throw new Error("Puter.js no se cargó correctamente. Asegúrate de tener conexión a internet y recarga la página.");
         }
 
-        if (state.currentUser && state.currentUser.authenticated) {
-            if (elements.authStateLoggedOut) elements.authStateLoggedOut.classList.add('hidden');
-            if (elements.authStateLoggedIn) elements.authStateLoggedIn.classList.remove('hidden');
-            if (elements.cardAvatarImg) {
-                elements.cardAvatarImg.src = state.currentUser.picture || 
-                    `https://ui-avatars.com/api/?name=${encodeURIComponent(state.currentUser.name || 'U')}&background=4285F4&color=fff`;
-            }
-            if (elements.cardUserName) elements.cardUserName.textContent = state.currentUser.name || 'Usuario de Google';
-            if (elements.cardUserEmail) elements.cardUserEmail.textContent = state.currentUser.email || '';
-        } else {
-            if (elements.authStateLoggedOut) elements.authStateLoggedOut.classList.remove('hidden');
-            if (elements.authStateLoggedIn) elements.authStateLoggedIn.classList.add('hidden');
-        }
-        elements.modalGoogleAuth.classList.remove('hidden');
-    }
+        let lastError = null;
+        const messages = [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: userPrompt }
+        ];
 
-    function closeGoogleModal() {
-        if (elements.modalGoogleAuth) {
-            elements.modalGoogleAuth.classList.add('hidden');
-        }
-    }
-
-    function showGoogleAuthMsg(msg, type = 'info') {
-        if (!elements.googleAuthMsg) return;
-        elements.googleAuthMsg.textContent = msg;
-        elements.googleAuthMsg.className = `message-box ${type}`;
-    }
-
-    function setUserAuthenticated(user) {
-        state.currentUser = user;
-        try {
-            localStorage.setItem('google_user', JSON.stringify(user));
-        } catch (e) {}
-
-        if (elements.btnGoogleLogin) elements.btnGoogleLogin.classList.add('hidden');
-        if (elements.userProfileChip) elements.userProfileChip.classList.remove('hidden');
-        if (elements.userAvatarImg) {
-            elements.userAvatarImg.src = user.picture || 
-                `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'U')}&background=4285F4&color=fff`;
-        }
-        if (elements.userNameText) elements.userNameText.textContent = user.name || 'Usuario';
-        if (elements.userEmailText) elements.userEmailText.textContent = user.email || '';
-    }
-
-    function setUserLoggedOut() {
-        state.currentUser = null;
-        try {
-            localStorage.removeItem('google_user');
-        } catch (e) {}
-
-        if (elements.btnGoogleLogin) elements.btnGoogleLogin.classList.remove('hidden');
-        if (elements.userProfileChip) elements.userProfileChip.classList.add('hidden');
-    }
-
-    async function checkAuthAndStatus() {
-        try {
-            // 1. Obtener usuario de la sesión actual
-            const res = await fetch('/api/auth/current-user');
-            const data = await res.json();
-
-            if (data.authenticated && data.user) {
-                setUserAuthenticated(data.user);
-            } else {
-                // Revisar si estaba guardado en localStorage
-                let localUser = null;
-                try {
-                    const stored = localStorage.getItem('google_user');
-                    if (stored) localUser = JSON.parse(stored);
-                } catch (e) {}
-
-                if (localUser && localUser.email) {
-                    try {
-                        const syncRes = await fetch('/api/auth/google', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(localUser)
-                        });
-                        const syncData = await syncRes.json();
-                        if (syncData.success && syncData.user) {
-                            setUserAuthenticated(syncData.user);
-                        } else {
-                            setUserAuthenticated(localUser);
-                        }
-                    } catch (e) {
-                        setUserAuthenticated(localUser);
-                    }
-                } else {
-                    setUserLoggedOut();
-                    // Pedir al usuario iniciar sesión en Google automáticamente para vincular su IA
-                    setTimeout(() => {
-                        openGoogleModal();
-                    }, 500);
-                }
-            }
-
-            // Inicializar botón oficial de Google GIS si está configurado
-            if (data.google_client_id && window.google && window.google.accounts) {
-                try {
-                    window.google.accounts.id.initialize({
-                        client_id: data.google_client_id,
-                        callback: handleGoogleCredentialResponse,
-                        auto_select: false
-                    });
-                    if (elements.gisRenderButton) {
-                        elements.gisRenderButton.classList.remove('hidden');
-                        window.google.accounts.id.renderButton(
-                            elements.gisRenderButton,
-                            { theme: 'filled_blue', size: 'large', width: '100%', text: 'signin_with', shape: 'rectangular' }
-                        );
-                    }
-                } catch (gisErr) {
-                    console.warn('[GIS] Error inicializando botón de Google:', gisErr);
-                }
-            }
-
-            // 2. Verificar estado general de claves API
-            const statusRes = await fetch('/api/status');
-            const statusData = await statusRes.json();
-            state.hasApiKey = statusData.has_api_key;
-        } catch (err) {
-            console.error('Error verificando autenticación:', err);
-        }
-    }
-
-    async function handleGoogleCredentialResponse(response) {
-        try {
-            showGoogleAuthMsg('Iniciando sesión con Google...', 'info');
-            const res = await fetch('/api/auth/google', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ credential: response.credential })
-            });
-            const data = await res.json();
-            if (data.success) {
-                setUserAuthenticated(data.user);
-                showGoogleAuthMsg(`¡Bienvenido ${data.user.name}! Tu cuenta de Google e IA está conectada.`, 'success');
-                showToast(`¡Conectado como ${data.user.email}!`, 'success');
-                setTimeout(() => {
-                    closeGoogleModal();
-                }, 1000);
-            } else {
-                showGoogleAuthMsg(data.error || 'Error al conectar con Google.', 'error');
-            }
-        } catch (e) {
-            showGoogleAuthMsg('Error de red al conectar con Google.', 'error');
-        }
-    }
-
-    // Handlers de Google Auth
-    if (elements.btnGoogleLogin) {
-        elements.btnGoogleLogin.addEventListener('click', () => {
-            openGoogleModal();
-        });
-    }
-
-    if (elements.userProfileChip) {
-        elements.userProfileChip.addEventListener('click', () => {
-            openGoogleModal();
-        });
-    }
-
-    if (elements.btnCloseGoogleModal) {
-        elements.btnCloseGoogleModal.addEventListener('click', () => {
-            closeGoogleModal();
-        });
-    }
-
-    if (elements.btnCloseGoogleModalFooter) {
-        elements.btnCloseGoogleModalFooter.addEventListener('click', () => {
-            closeGoogleModal();
-        });
-    }
-
-    if (elements.btnToggleKeyVis && elements.inputApiKey) {
-        elements.btnToggleKeyVis.addEventListener('click', () => {
-            const isPass = elements.inputApiKey.type === 'password';
-            elements.inputApiKey.type = isPass ? 'text' : 'password';
-            const icon = elements.btnToggleKeyVis.querySelector('i');
-            if (icon) icon.className = isPass ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
-        });
-    }
-
-    if (elements.formQuickGoogle) {
-        elements.formQuickGoogle.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const email = elements.inputGoogleEmail ? elements.inputGoogleEmail.value.trim() : '';
-            const name = elements.inputGoogleName ? elements.inputGoogleName.value.trim() : '';
-            const apiKey = elements.inputApiKey ? elements.inputApiKey.value.trim() : '';
-
-            if (!email || !email.includes('@')) {
-                showGoogleAuthMsg('Por favor ingresa un correo de Google válido (ej. tu-cuenta@gmail.com).', 'error');
-                return;
-            }
-
+        for (const model of GEMINI_MODELS_PUTER) {
             try {
-                if (elements.btnSubmitGoogleAuth) {
-                    elements.btnSubmitGoogleAuth.disabled = true;
-                    elements.btnSubmitGoogleAuth.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Conectando...</span>';
-                }
-                showGoogleAuthMsg('Vinculando tu cuenta de Google con el motor de IA...', 'info');
-
-                const res = await fetch('/api/auth/google', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, name, apiKey })
+                console.log(`[Puter] Intentando generar apunte con modelo: ${model}...`);
+                const response = await puter.ai.chat(messages, {
+                    model: model,
+                    temperature: 0.2
                 });
-                const data = await res.json();
 
-                if (data.success && data.user) {
-                    setUserAuthenticated(data.user);
-                    if (apiKey) state.hasApiKey = true;
-                    showGoogleAuthMsg(`¡Sesión iniciada con éxito! Cuenta de IA configurada para ${data.user.name}.`, 'success');
-                    showToast(`¡Conectado como ${data.user.email}!`, 'success');
-                    setTimeout(() => {
-                        closeGoogleModal();
-                    }, 1100);
-                } else {
-                    showGoogleAuthMsg(data.error || 'No se pudo iniciar sesión con Google.', 'error');
+                const rawText = response?.message?.content || (typeof response === 'string' ? response : response?.toString()) || '';
+                if (rawText && rawText.trim()) {
+                    console.log(`[Puter] ¡Generación exitosa con ${model}! Longitud: ${rawText.length} caracteres.`);
+                    return { text: rawText.trim(), model: model };
                 }
             } catch (err) {
-                showGoogleAuthMsg('Error de conexión al autenticar con Google.', 'error');
-            } finally {
-                if (elements.btnSubmitGoogleAuth) {
-                    elements.btnSubmitGoogleAuth.disabled = false;
-                    elements.btnSubmitGoogleAuth.innerHTML = '<i class="fa-brands fa-google"></i> <span>Conectar con esta Cuenta de Google</span>';
-                }
+                console.warn(`[Puter] Falló el modelo ${model}:`, err?.message || err);
+                lastError = err;
             }
-        });
+        }
+
+        const errMsg = lastError?.message || lastError?.toString() || "Error desconocido en Puter AI";
+        throw new Error(`No se pudo generar el apunte con los modelos de Gemini disponibles en Puter (${errMsg}).`);
     }
 
-    if (elements.btnLogoutGoogle) {
-        elements.btnLogoutGoogle.addEventListener('click', async () => {
-            try {
-                await fetch('/api/auth/logout', { method: 'POST' });
-            } catch (e) {}
-            setUserLoggedOut();
-            showToast('Has cerrado la sesión de Google.', 'info');
-            openGoogleModal();
-        });
+    /**
+     * Parsea respuestas JSON de IA de forma robusta en JavaScript.
+     * Limpia bloques markdown ```json ... ```, extrae la porción {...} y repara escapes de LaTeX.
+     */
+    function robustParseJson(rawText) {
+        if (!rawText || typeof rawText !== 'string') {
+            throw new Error("Respuesta vacía o formato inválido recibido de la IA.");
+        }
+
+        let text = rawText.trim();
+        if (text.startsWith("```json")) {
+            text = text.substring(7);
+        } else if (text.startsWith("```")) {
+            text = text.substring(3);
+        }
+        if (text.endsWith("```")) {
+            text = text.substring(0, text.length - 3);
+        }
+        text = text.trim();
+
+        const start = text.indexOf('{');
+        const end = text.lastIndexOf('}');
+        if (start !== -1 && end !== -1 && end >= start) {
+            text = text.substring(start, end + 1);
+        }
+
+        // 1. Intentar JSON.parse directo
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            // Continuar con saneamiento
+        }
+
+        // 2. Reparar macros de LaTeX que usan barras invertidas (\frac, \Delta, \sigma, etc.)
+        try {
+            const fixed = text.replace(/\\(.)([a-zA-Z]?)/g, (match, following, after) => {
+                if (['"', '\\', '/'].includes(following)) {
+                    return match;
+                }
+                if (['n', 't', 'r', 'b', 'f'].includes(following)) {
+                    if (after && /[a-zA-Z]/.test(after)) {
+                        return '\\\\' + following + after;
+                    }
+                    return match;
+                }
+                return '\\\\' + match.slice(1);
+            });
+            return JSON.parse(fixed);
+        } catch (e2) {
+            // Continuar al fallback
+        }
+
+        // 3. Fallback: escapar todas las barras invertidas que no van seguidas de " o \
+        try {
+            const fixed2 = text.replace(/\\(?![/"\\])/g, '\\\\');
+            return JSON.parse(fixed2);
+        } catch (e3) {
+            console.error("[robustParseJson] Error irrecuperable parseando JSON:", text);
+            throw new Error("La IA generó una estructura que no pudo ser procesada como JSON válido. Intenta generar nuevamente.");
+        }
+    }
+
+    async function checkServerStatus() {
+        try {
+            const res = await fetch('/api/status');
+            const data = await res.json();
+            console.log('[Status] Servidor listo. Motor:', data.engine || 'Puter.js');
+        } catch (err) {
+            console.warn('[Status] No se pudo verificar estado del servidor:', err);
+        }
     }
 
     // Demo button handler
@@ -636,13 +480,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (!state.currentUser && !state.hasApiKey) {
-            openGoogleModal();
-            showGoogleAuthMsg('Inicia sesión con tu cuenta de Google para comenzar a generar apuntes.', 'error');
-            return;
-        }
-
-        // Switch to loading view
+        // Cambiar a vista de carga
         switchView('loading');
         simulateProgress();
 
@@ -658,15 +496,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         try {
+            // 1. Extracción de fuentes en el backend (YouTube / Whisper / PDF)
+            setLoadingStage(1);
             const response = await fetch('/api/generate-notes', {
                 method: 'POST',
                 body: formData
             });
 
-            let data;
+            let backendData;
             const textResponse = await response.text();
             try {
-                data = JSON.parse(textResponse);
+                backendData = JSON.parse(textResponse);
             } catch (jsonErr) {
                 console.error('Server returned non-JSON response:', textResponse);
                 switchView('input');
@@ -674,53 +514,113 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (!data.success) {
+            if (!backendData.success) {
                 switchView('input');
-                showToast(data.error || 'Error al generar el apunte.', 'error');
+                showToast(backendData.error || 'Error al procesar las fuentes.', 'error');
                 return;
             }
 
-            // Success! Render notes
-            state.currentResult = data.data;
-            renderStudyMaterial(data.data);
+            // 2. Generación pedagógica con Gemini vía Puter.js (en el navegador, sin API key)
+            setLoadingStage(2);
+            let puterResult;
+            try {
+                puterResult = await callPuterGeminiWithFallback(
+                    backendData.system_instruction,
+                    backendData.user_prompt
+                );
+            } catch (aiErr) {
+                console.error('Error durante la generación con Puter.js:', aiErr);
+                switchView('input');
+                showToast(aiErr.message || 'Error al conectar con la IA de Gemini.', 'error');
+                return;
+            }
+
+            // 3. Estructuración y parseo robusto del JSON
+            setLoadingStage(3);
+            let parsedData;
+            try {
+                parsedData = robustParseJson(puterResult.text);
+            } catch (parseErr) {
+                console.error('Error parseando JSON de Puter:', parseErr, puterResult.text);
+                switchView('input');
+                showToast(parseErr.message || 'Error al estructurar el JSON del apunte.', 'error');
+                return;
+            }
+
+            // Incorporar fuentes procesadas por el backend y asociar video_ids para fórmulas
+            if (backendData.sources && Array.isArray(backendData.sources)) {
+                parsedData.sources = backendData.sources;
+                const ytSources = backendData.sources.filter(s => s.type === 'youtube');
+                if (ytSources.length === 1 && parsedData.formulas) {
+                    parsedData.formulas.forEach(f => {
+                        if (!f.video_id) f.video_id = ytSources[0].id;
+                    });
+                }
+            }
+
+            // Éxito: Renderizar apunte completo
+            state.currentResult = parsedData;
+            renderStudyMaterial(parsedData);
             switchView('results');
+            showToast(`¡Apunte generado con éxito usando ${puterResult.model}!`, 'success');
 
         } catch (err) {
-            console.error('Error during generation:', err);
+            console.error('Error during generation flow:', err);
             switchView('input');
-            showToast('Error de conexión con el servidor. Verifica que esté en ejecución.', 'error');
+            showToast('Error de comunicación durante la generación. Revisa la consola.', 'error');
         }
     });
 
     let progressInterval = null;
+    let currentStage = 1;
+    let progressPct = 10;
+
+    function setLoadingStage(stage) {
+        currentStage = stage;
+        if (stage === 1) {
+            progressPct = Math.max(progressPct, 15);
+            elements.step1.className = 'step-item active';
+            elements.step2.className = 'step-item';
+            elements.step3.className = 'step-item';
+            elements.loadingStatusTitle.textContent = 'Extrayendo fuentes...';
+            elements.loadingStatusDesc.textContent = 'Leyendo transcripciones de YouTube y texto de PDFs.';
+        } else if (stage === 2) {
+            progressPct = Math.max(progressPct, 50);
+            elements.step1.className = 'step-item completed';
+            elements.step2.className = 'step-item active';
+            elements.step3.className = 'step-item';
+            elements.loadingStatusTitle.textContent = 'Generando apunte con Gemini (vía Puter)...';
+            elements.loadingStatusDesc.textContent = 'Sintetizando conceptos clave, fórmulas KaTeX y desarrollos pedagógicos.';
+        } else if (stage === 3) {
+            progressPct = Math.max(progressPct, 92);
+            elements.step1.className = 'step-item completed';
+            elements.step2.className = 'step-item completed';
+            elements.step3.className = 'step-item active';
+            elements.loadingStatusTitle.textContent = 'Estructurando resultado...';
+            elements.loadingStatusDesc.textContent = 'Organizando post-its, diagramas Mermaid y apunte maestro.';
+        }
+        if (elements.progressBar) {
+            elements.progressBar.style.width = `${progressPct}%`;
+        }
+    }
+
     function simulateProgress() {
-        let pct = 10;
-        elements.progressBar.style.width = '10%';
-        elements.step1.className = 'step-item active';
-        elements.step2.className = 'step-item';
-        elements.step3.className = 'step-item';
-        elements.loadingStatusTitle.textContent = 'Extrayendo el material fuente...';
-        elements.loadingStatusDesc.textContent = 'Leyendo transcripciones de video y páginas del PDF.';
+        progressPct = 10;
+        setLoadingStage(1);
 
         clearInterval(progressInterval);
         progressInterval = setInterval(() => {
-            if (pct < 45) {
-                pct += 5;
-                elements.progressBar.style.width = `${pct}%`;
-            } else if (pct < 85) {
-                pct += 2;
-                elements.progressBar.style.width = `${pct}%`;
-                elements.step2.className = 'step-item active';
-                elements.loadingStatusTitle.textContent = 'Analizando y estructurando los apuntes...';
-                elements.loadingStatusDesc.textContent = 'Sintetizando conceptos clave, deducciones matemáticas y desarrollos.';
-            } else if (pct < 96) {
-                pct += 1;
-                elements.progressBar.style.width = `${pct}%`;
-                elements.step3.className = 'step-item active';
-                elements.loadingStatusTitle.textContent = 'Estructurando fórmulas y apunte maestro...';
-                elements.loadingStatusDesc.textContent = 'Organizando desarrollos pedagógicos, deducciones y diagramas.';
+            if (currentStage === 1 && progressPct < 45) {
+                progressPct += 5;
+                elements.progressBar.style.width = `${progressPct}%`;
+            } else if (currentStage === 2 && progressPct < 88) {
+                progressPct += 2;
+                elements.progressBar.style.width = `${progressPct}%`;
+            } else if (currentStage === 3 && progressPct < 98) {
+                progressPct += 1;
+                elements.progressBar.style.width = `${progressPct}%`;
             }
-        }, 600);
+        }, 500);
     }
 
     function switchView(viewName) {
@@ -1308,5 +1208,5 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Startup check
-    checkAuthAndStatus();
+    checkServerStatus();
 });

@@ -3,8 +3,9 @@ import os
 import re
 import json
 import requests
+import tempfile
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 
@@ -81,283 +82,87 @@ def add_no_cache_headers(response):
     response.headers['Expires'] = '0'
     return response
 
-class GeminiConfig:
+# Instancia global del modelo faster-whisper para reutilizar en memoria
+whisper_model = None
+
+def get_whisper_model():
+    """Carga de forma perezosa y reutiliza el modelo faster-whisper 'base' en CPU."""
+    global whisper_model
+    if whisper_model is None:
+        print("[Whisper] Inicializando modelo faster-whisper 'base' en CPU...")
+        from faster_whisper import WhisperModel
+        whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+    return whisper_model
+
+def transcribe_youtube_audio_with_whisper(video_id):
     """
-    Configuración centralizada de modelos Gemini:
-    1. Modelo principal: gemini-3.5-flash-lite (ultrarrápido, generación en 2-4 segundos, 500 RPD)
-    2. Fallback de alta capacidad: gemini-3.8-flash
-    3. Último recurso: gemini-3.7-flash y gemini-3.6-flash (solo si los anteriores fallan por motivos distintos a cuota)
+    Descarga el audio del video de YouTube usando yt-dlp y lo transcribe localmente con faster-whisper.
+    Se utiliza como fallback cuando un video no cuenta con subtítulos oficiales ni automáticos en YouTube.
     """
-    PRIMARY_MODEL = "gemini-3.5-flash-lite"
-    FALLBACK_MODEL = "gemini-3.8-flash"
-    LAST_RESORT_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash"]
-    ACTIVE_MODELS = [PRIMARY_MODEL, FALLBACK_MODEL]
-    MODELS = ACTIVE_MODELS + LAST_RESORT_MODELS
+    import yt_dlp
 
-    @classmethod
-    def get_primary_chain(cls):
-        return list(cls.ACTIVE_MODELS)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_template = os.path.join(temp_dir, f"{video_id}.%(ext)s")
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'outtmpl': output_template,
+            'quiet': True,
+            'no_warnings': True
+        }
 
-    @classmethod
-    def get_last_resort_chain(cls):
-        return list(cls.LAST_RESORT_MODELS)
-
-class GeminiQuotaExceeded(Exception):
-    """Excepción específica cuando se agota la cuota gratuita (429 / RESOURCE_EXHAUSTED)."""
-    pass
-
-def is_quota_error(exc):
-    """Detecta si un error corresponde a límite de cuota (HTTP 429 o RESOURCE_EXHAUSTED)."""
-    if not exc:
-        return False
-    msg = str(exc).lower()
-    code = getattr(exc, 'code', None)
-    status_code = getattr(exc, 'status_code', None)
-    if code == 429 or status_code == 429:
-        return True
-    keywords = ["429", "resource_exhausted", "quota", "ratelimit", "rate limit", "exceeded your current quota"]
-    return any(k in msg for k in keywords)
-
-
-def is_model_not_found_error(exc):
-    """Detecta si un error corresponde a modelo no encontrado o deprecado (HTTP 404 o NOT_FOUND)."""
-    if not exc:
-        return False
-    msg = str(exc).lower()
-    code = getattr(exc, 'code', None)
-    status_code = getattr(exc, 'status_code', None)
-    if code == 404 or status_code == 404:
-        return True
-    keywords = ["404", "not_found", "not found", "is not supported for this api version", "deprecated", "does not exist"]
-    return any(k in msg for k in keywords)
-
-
-def is_token_limit_error(exc):
-    """Detecta si un error corresponde a límite de tokens o contexto excedido (HTTP 400/413)."""
-    if not exc:
-        return False
-    msg = str(exc).lower()
-    code = getattr(exc, 'code', None)
-    status_code = getattr(exc, 'status_code', None)
-    token_keywords = [
-        "token", "context length", "maximum context", "payload too large",
-        "too many tokens", "exceeds the limit", "request payload",
-        "input length", "max tokens", "too large"
-    ]
-    has_token_indication = any(k in msg for k in token_keywords)
-    is_bad_req = code in (400, 413) or status_code in (400, 413) or "400" in msg or "413" in msg or "invalid_argument" in msg
-    return has_token_indication and (is_bad_req or "exceed" in msg or "limit" in msg)
-
-
-def handle_gemini_error(exc):
-    """Centraliza la clasificación y respuesta HTTP para errores de Google Gemini:
-    - 429: Cuota gratuita agotada (RESOURCE_EXHAUSTED / RATE_LIMIT).
-    - 404: Modelo no encontrado o deprecado por Google.
-    - 400: Límite de tokens o longitud de contexto excedido.
-    - 500: Error interno o inesperado de la API.
-    """
-    if isinstance(exc, GeminiQuotaExceeded) or is_quota_error(exc):
-        return jsonify({
-            "success": False,
-            "error": "Se alcanzó el límite de uso gratuito de Gemini por ahora. Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
-        }), 429
-
-    if is_model_not_found_error(exc):
-        return jsonify({
-            "success": False,
-            "error": "El modelo de IA solicitado no está disponible o ha sido discontinuado por Google Gemini. Por favor verifica la configuración de modelos."
-        }), 404
-
-    if is_token_limit_error(exc):
-        return jsonify({
-            "success": False,
-            "error": "El contenido ingresado supera el límite máximo de tokens o contexto permitido por la IA. Intenta con videos más cortos o con menos documentos simultáneos."
-        }), 400
-
-    safe_msg = str(exc)
-    if "503" in safe_msg or "unavailable" in safe_msg.lower() or "high demand" in safe_msg.lower():
-        return jsonify({
-            "success": False,
-            "error": "Los servidores de Google Gemini están experimentando alta demanda temporal en procesamiento de video. Por favor espera 30 segundos y vuelve a intentar."
-        }), 503
-
-    try:
-        print(f"Error calling Gemini API: {safe_msg}")
-    except Exception:
-        pass
-    return jsonify({
-        "success": False,
-        "error": f"Error al generar el apunte con Gemini: {safe_msg}"
-    }), 500
-
-def call_gemini_with_fallback(client, contents, system_instruction=None, response_mime_type=None, models=None, thinking_budget=0):
-    """
-    Ejecuta llamadas a Gemini siguiendo la jerarquía configurada en GeminiConfig:
-    1. "gemini-3.8-flash" como modelo principal.
-    2. "gemini-3.5-flash-lite" como fallback (500 RPD).
-    3. "gemini-3.7-flash" y "gemini-3.6-flash" como último recurso, solo si los anteriores fallan por razones distintas a 429.
-
-    Si un modelo devuelve 429 (cuota agotada), pasa automáticamente al siguiente modelo sin reintentos innecesarios.
-    thinking_budget=0 desactiva la fase de razonamiento previo de Gemini, acelerando la respuesta entre un 50% y 75%.
-    """
-    from google.genai import types
-    import time
-
-    if models is not None:
-        primary_chain = models
-        last_resort_chain = []
-    else:
-        primary_chain = GeminiConfig.ACTIVE_MODELS
-        last_resort_chain = GeminiConfig.LAST_RESORT_MODELS
-
-    config = types.GenerateContentConfig(
-        temperature=0.3
-    )
-    if system_instruction:
-        config.system_instruction = system_instruction
-    if response_mime_type:
-        config.response_mime_type = response_mime_type
-    if thinking_budget is not None:
+        print(f"[Whisper] Descargando audio de video {video_id} con yt-dlp...")
         try:
-            config.thinking_config = types.ThinkingConfig(thinking_budget=thinking_budget)
-        except Exception:
-            pass
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+        except Exception as yerr:
+            print(f"[Whisper] Error descargando audio con yt-dlp: {yerr}")
+            return {
+                "success": False,
+                "error": f"No se pudo descargar el audio del video ({str(yerr)})."
+            }
 
-    last_error = None
-    all_quota_exhausted = True
+        downloaded_files = list(Path(temp_dir).glob(f"{video_id}.*"))
+        if not downloaded_files:
+            return {
+                "success": False,
+                "error": f"No se encontró el archivo de audio descargado para el video {video_id}."
+            }
 
-    # 1. Intentar la cadena activa (gemini-3.8-flash -> gemini-3.5-flash-lite)
-    for model_name in primary_chain:
+        audio_path = str(downloaded_files[0])
+        print(f"[Whisper] Transcribiendo audio de {audio_path} con faster-whisper...")
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config
-            )
-            if response and response.text:
-                print(f"[Gemini] Respondio exitosamente el modelo: {model_name}")
-                return response.text.strip(), model_name
-        except Exception as merr:
-            last_error = merr
-            err_str = str(merr)
-            print(f"[Gemini] Modelo {model_name} falló: {err_str[:140]}")
+            model = get_whisper_model()
+            segments, info = model.transcribe(audio_path, beam_size=5)
 
-            # Si el modelo falló por incompatibilidad con thinking_config, reintentar de inmediato sin él
-            if "thinking" in err_str.lower() and getattr(config, 'thinking_config', None) is not None:
-                try:
-                    cfg_no_thinking = config.model_copy(update={'thinking_config': None})
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=cfg_no_thinking
-                    )
-                    if response and response.text:
-                        print(f"[Gemini] Respondio exitosamente (sin thinking_config) el modelo: {model_name}")
-                        return response.text.strip(), model_name
-                except Exception as nerr:
-                    last_error = nerr
-                    err_str = str(nerr)
+            timed_lines = []
+            full_texts = []
+            for seg in segments:
+                m, s = divmod(int(seg.start), 60)
+                h, m = divmod(m, 60)
+                time_str = f"[{h:02d}:{m:02d}:{s:02d}]" if h > 0 else f"[{m:02d}:{s:02d}]"
+                text = seg.text.strip()
+                if text:
+                    timed_lines.append(f"{time_str} {text}")
+                    full_texts.append(text)
 
-            if is_quota_error(merr):
-                # 429: No reintentar el mismo modelo. Pasar inmediatamente al siguiente modelo de la lista
-                print(f"[Gemini] Cuota agotada (429) en {model_name}. Pasando inmediatamente al siguiente modelo...")
-                continue
-            elif is_model_not_found_error(merr):
-                # 404: Modelo no disponible o deprecado. Pasar inmediatamente al siguiente modelo
-                all_quota_exhausted = False
-                print(f"[Gemini] Modelo {model_name} no disponible (404/deprecado). Pasando al siguiente modelo...")
-                continue
-            else:
-                # El fallo NO fue por cuota (ej. sobrecarga temporal 503)
-                all_quota_exhausted = False
-                if "503" in err_str or "high demand" in err_str or "unavailable" in err_str.lower():
-                    try:
-                        time.sleep(2)
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=contents,
-                            config=config
-                        )
-                        if response and response.text:
-                            print(f"[Gemini] Respondio exitosamente en reintento el modelo: {model_name}")
-                            return response.text.strip(), model_name
-                    except Exception as retry_err:
-                        last_error = retry_err
-                        print(f"[Gemini] Reintento en {model_name} falló: {str(retry_err)[:140]}")
-                        if is_quota_error(retry_err):
-                            continue
+            if not full_texts:
+                return {
+                    "success": False,
+                    "error": "La transcripción de audio resultó vacía."
+                }
 
-    # Si ambos modelos activos (3.8-flash y 3.5-flash-lite) fallaron por CUOTA AGOTADA (429):
-    # No quemar gemini-3.7-flash ni gemini-3.6-flash, ya que su cuota diaria ya está agotada.
-    if all_quota_exhausted:
-        raise GeminiQuotaExceeded(
-            "Se alcanzó el límite de uso gratuito de Gemini por ahora. "
-            "Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
-        )
-
-    # 2. Si fallaron por un motivo distinto a cuota agotada, probar último recurso (3.7 y 3.6)
-    for model_name in last_resort_chain:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config
-            )
-            if response and response.text:
-                print(f"[Gemini] Respondio exitosamente (último recurso) el modelo: {model_name}")
-                return response.text.strip(), model_name
-        except Exception as merr:
-            last_error = merr
-            err_str = str(merr)
-            print(f"[Gemini] Último recurso {model_name} falló: {err_str[:140]}")
-
-            if "thinking" in err_str.lower() and getattr(config, 'thinking_config', None) is not None:
-                try:
-                    cfg_no_thinking = config.model_copy(update={'thinking_config': None})
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=cfg_no_thinking
-                    )
-                    if response and response.text:
-                        print(f"[Gemini] Respondio exitosamente (último recurso, sin thinking_config) el modelo: {model_name}")
-                        return response.text.strip(), model_name
-                except Exception as nerr:
-                    last_error = nerr
-
-            if is_quota_error(merr) or is_model_not_found_error(merr):
-                continue
-
-    if is_quota_error(last_error):
-        raise GeminiQuotaExceeded(
-            "Se alcanzó el límite de uso gratuito de Gemini por ahora. "
-            "Esperá unos minutos y probá de nuevo, o probá con menos videos a la vez."
-        )
-
-    raise last_error or Exception("No se obtuvo respuesta de ninguno de los modelos de Gemini.")
-
-
-def get_api_key(request_data=None):
-    """Retrieve Gemini API key from request, session, environment, or .env file."""
-    if request_data and request_data.get('apiKey'):
-        return request_data.get('apiKey').strip()
-    
-    try:
-        session_key = session.get('user_api_key')
-        if session_key:
-            return session_key.strip()
-    except Exception:
-        pass
-
-    header_key = request.headers.get('X-Gemini-Api-Key')
-    if header_key:
-        return header_key.strip()
-        
-    env_key = os.environ.get('GEMINI_API_KEY')
-    if env_key:
-        return env_key.strip()
-        
-    return None
+            return {
+                "success": True,
+                "timed_text": "\n".join(timed_lines),
+                "full_text": " ".join(full_texts),
+                "duration_seconds": getattr(info, 'duration', 0)
+            }
+        except Exception as werr:
+            print(f"[Whisper] Error transcribiendo audio con faster-whisper: {werr}")
+            return {
+                "success": False,
+                "error": f"Error en la transcripción local con Whisper: {str(werr)}"
+            }
 
 def extract_youtube_id(url_or_id):
     """Extract YouTube video ID from various URL patterns or direct ID."""
@@ -817,107 +622,14 @@ def get_demo_notes():
 def index():
     return render_template('index.html')
 
-@app.route('/api/auth/google', methods=['POST'])
-def auth_google():
-    """Registra la sesión del usuario con su cuenta de Google."""
-    data = request.get_json() or {}
-    credential = data.get('credential')
-    email = data.get('email')
-    name = data.get('name')
-    picture = data.get('picture')
-
-    if credential:
-        try:
-            import base64
-            parts = credential.split('.')
-            if len(parts) >= 2:
-                padded = parts[1] + '=' * (-len(parts[1]) % 4)
-                payload = json.loads(base64.urlsafe_b64decode(padded.encode('utf-8')).decode('utf-8'))
-                email = payload.get('email', email)
-                name = payload.get('name', name)
-                picture = payload.get('picture', picture)
-        except Exception as e:
-            print(f"[Auth] Error decodificando credencial de Google: {e}")
-
-    if not email:
-        return jsonify({"success": False, "error": "Debes indicar un correo de Google válido."}), 400
-
-    clean_email = email.strip()
-    clean_name = (name or clean_email.split('@')[0]).strip()
-    safe_picture = picture or f"https://ui-avatars.com/api/?name={requests.utils.quote(clean_name)}&background=4285F4&color=fff"
-
-    user_info = {
-        "email": clean_email,
-        "name": clean_name,
-        "picture": safe_picture,
-        "authenticated": True
-    }
-    session['google_user'] = user_info
-
-    # Si se proporcionó una clave personal de Google AI Studio, guardarla
-    personal_key = data.get('apiKey', '').strip()
-    if personal_key:
-        session['user_api_key'] = personal_key
-
-    return jsonify({
-        "success": True,
-        "user": user_info,
-        "message": f"Sesión iniciada con Google como {clean_name}"
-    })
-
-@app.route('/api/auth/current-user', methods=['GET'])
-def get_current_user():
-    """Retorna el usuario actual de Google conectado."""
-    user = session.get('google_user')
-    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
-    return jsonify({
-        "authenticated": bool(user),
-        "user": user,
-        "google_client_id": google_client_id
-    })
-
-@app.route('/api/auth/logout', methods=['POST'])
-def logout_user():
-    """Cierra la sesión de Google."""
-    session.pop('google_user', None)
-    session.pop('user_api_key', None)
-    return jsonify({"success": True, "message": "Sesión cerrada correctamente"})
-
 @app.route('/api/status', methods=['GET'])
 def check_status():
-    api_key = get_api_key()
-    user = session.get('google_user')
+    """Indica que el backend está listo para procesar fuentes y delegar a Puter.js."""
     return jsonify({
         "status": "ready",
-        "has_api_key": bool(api_key),
-        "key_preview": f"{api_key[:6]}...{api_key[-4:]}" if api_key and len(api_key) > 10 else None,
-        "authenticated": bool(user),
-        "user": user
+        "engine": "puter.js",
+        "puter_ready": True
     })
-
-@app.route('/api/save-key', methods=['POST'])
-def save_key():
-    data = request.get_json() or {}
-    key = data.get('apiKey', '').strip()
-    if not key:
-        return jsonify({"success": False, "error": "La clave no puede estar vacía"}), 400
-        
-    try:
-        # Save to .env
-        env_lines = []
-        if env_path.exists():
-            with open(env_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if not line.startswith("GEMINI_API_KEY="):
-                        env_lines.append(line)
-        env_lines.append(f"GEMINI_API_KEY={key}\n")
-        with open(env_path, 'w', encoding='utf-8') as f:
-            f.writelines(env_lines)
-            
-        os.environ['GEMINI_API_KEY'] = key
-        return jsonify({"success": True, "message": "Clave guardada exitosamente"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/youtube-preview', methods=['POST'])
 def youtube_preview():
@@ -934,29 +646,17 @@ def youtube_preview():
 
 @app.route('/api/generate-notes', methods=['POST'])
 def generate_notes():
-    api_key = get_api_key(request.form)
-    if not api_key:
-        return jsonify({
-            "success": False, 
-            "error": "Se requiere una clave de API de Gemini (GEMINI_API_KEY). Puedes ingresarla en el menú de configuración de la app o guardarla en el archivo .env."
-        }), 400
-
-    try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=api_key)
-    except Exception as ie:
-        return jsonify({"success": False, "error": f"Error al inicializar cliente de Gemini: {str(ie)}"}), 500
-
-    youtube_url = request.form.get('youtubeUrl', '').strip()
+    """
+    Extrae fuentes (YouTube con subtítulos o Whisper, documentos PDF) y construye el prompt pedagógico.
+    Devuelve los prompts estructurados para que Puter.js ejecute la inferencia directamente en el navegador del usuario.
+    """
     custom_instructions = request.form.get('instructions', '').strip()
     depth_level = request.form.get('depth', 'completo')  # 'conciso', 'completo', 'exhaustivo'
-    
+
     collected_sources = []
     source_texts = []
-    video_metadata = None
 
-    # 1. Process YouTube videos if provided (supports multiple URLs)
+    # 1. Procesar videos de YouTube (soporta múltiples URLs)
     raw_urls = request.form.getlist('youtubeUrls')
     single_url = request.form.get('youtubeUrl', '').strip()
     if single_url and single_url not in raw_urls:
@@ -968,49 +668,14 @@ def generate_notes():
         if u and u not in cleaned_urls:
             cleaned_urls.append(u)
 
-    try:
-        # Pre-extracción concurrente de metadatos y transcripciones para acelerar múltiples URLs
-        video_items = []
-        if cleaned_urls:
-            import concurrent.futures
+    if cleaned_urls:
+        for idx, url in enumerate(cleaned_urls):
+            video_id = extract_youtube_id(url)
+            if not video_id:
+                return jsonify({"success": False, "error": f"El enlace '{url}' no es un video de YouTube válido."}), 400
 
-            def _fetch_yt_info(entry):
-                idx, url = entry
-                vid = extract_youtube_id(url)
-                if not vid:
-                    return {"idx": idx, "url": url, "error": f"El enlace '{url}' no es un video de YouTube válido."}
-                meta = get_youtube_metadata(vid)
-                trans = get_youtube_transcript(vid)
-                dur = None
-                if not trans.get("success"):
-                    dur = get_youtube_duration_seconds(vid)
-                return {
-                    "idx": idx,
-                    "url": url,
-                    "video_id": vid,
-                    "meta": meta,
-                    "transcript": trans,
-                    "duration_sec": dur
-                }
-
-            if len(cleaned_urls) == 1:
-                video_items = [_fetch_yt_info((0, cleaned_urls[0]))]
-            else:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(cleaned_urls), 4)) as executor:
-                    video_items = list(executor.map(_fetch_yt_info, enumerate(cleaned_urls)))
-
-            for item in video_items:
-                if "error" in item:
-                    return jsonify({"success": False, "error": item["error"]}), 400
-
-            video_items = sorted(video_items, key=lambda x: x["idx"])
-
-        # Procesamiento secuencial: cada video sin subtítulos se analiza en su propia llamada individual
-        for item in video_items:
-            idx = item["idx"]
-            video_id = item["video_id"]
-            v_meta = item["meta"]
-            transcript_res = item["transcript"]
+            v_meta = get_youtube_metadata(video_id)
+            transcript_res = get_youtube_transcript(video_id)
 
             if transcript_res.get("success"):
                 collected_sources.append({
@@ -1026,183 +691,90 @@ def generate_notes():
                     f"Transcripción con marcas de tiempo:\n{transcript_res['timed_text']}"
                 )
             else:
-                # Video sin subtítulos: procesamiento audiovisual multimodal individual
-                # FPS optimizado: 0.2 fps para videos <= 5 min, 0.1 fps para 5-25 min, 0.05 fps para > 25 min
-                duration_sec = item["duration_sec"] or 600
-                if duration_sec <= 300:
-                    fps = 0.2
-                elif duration_sec <= 1500:
-                    fps = 0.1
-                else:
-                    fps = 0.05
+                # Video sin subtítulos: descargar audio con yt-dlp y transcribir con faster-whisper
+                print(f"[Extracción] Video #{idx+1} '{v_meta['title']}' no tiene subtítulos. Transcribiendo audio con faster-whisper...")
+                whisper_res = transcribe_youtube_audio_with_whisper(video_id)
 
-                video_part = types.Part(
-                    file_data=types.FileData(file_uri=f"https://www.youtube.com/watch?v={video_id}"),
-                    video_metadata=types.VideoMetadata(fps=fps)
-                )
-
-                extract_prompt = f"""Analiza exhaustivamente este video de YouTube ('{v_meta['title']}').
-Extrae con máximo rigor pedagógico todo su contenido académico y formativo:
-1. Temas, conceptos teóricos y explicaciones brindadas por el docente u orador.
-2. Fórmulas matemáticas, ecuaciones, expresiones o cálculos en pantalla o pizarra (escríbelas siempre en formato LaTeX $...$ o $$...$$).
-3. Diapositivas, diagramas, esquemas o gráficos visuales explicados.
-4. Ejemplos resueltos, demostraciones paso a paso y conclusiones clave.
-
-Escribe un desarrollo analítico muy detallado, exhaustivo y estructurado cronológicamente con todo el contenido del video."""
-
-                print(f"[Proceso Secuencial] Analizando video #{idx+1} ('{v_meta['title']}') individualmente con Gemini (FPS={fps})...")
-                video_models = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.7-flash"]
-                video_summary, video_model = call_gemini_with_fallback(
-                    client=client,
-                    contents=[video_part, extract_prompt],
-                    models=video_models
-                )
-
-                # Liberar memoria del video inmediatamente
-                del video_part
-                import gc
-                gc.collect()
-
-                collected_sources.append({
-                    "type": "youtube",
-                    "title": v_meta["title"],
-                    "id": video_id,
-                    "thumbnail": v_meta["thumbnail"],
-                    "has_captions": False,
-                    "mode": "multimodal_vision",
-                    "model_used": video_model,
-                    "order": idx + 1
-                })
-                source_texts.append(
-                    f"=== FUENTE VIDEO DE YOUTUBE #{idx+1} (ANÁLISIS MULTIMODAL - MODELO {video_model}): '{v_meta['title']}' (ID: {video_id}) ===\n"
-                    f"{video_summary}"
-                )
-
-                # Pausa breve entre videos consecutivos para respetar los límites de tasa (RPM)
-                if idx < len(video_items) - 1:
-                    import time
-                    time.sleep(1)
-
-        # 2. Process uploaded PDF files if provided
-        uploaded_files = request.files.getlist('pdfFiles')
-        for file in uploaded_files:
-            if file and file.filename and file.filename.lower().endswith('.pdf'):
-                safe_name = secure_filename(file.filename)
-                save_path = UPLOAD_FOLDER / safe_name
-                file.save(save_path)
-                
-                pdf_res = extract_pdf_text(str(save_path))
-                try:
-                    if save_path.exists():
-                        save_path.unlink()
-                except Exception:
-                    pass
-
-                if pdf_res["success"]:
+                if whisper_res.get("success"):
                     collected_sources.append({
-                        "type": "pdf",
-                        "filename": safe_name,
-                        "pages": pdf_res["pages"]
+                        "type": "youtube",
+                        "title": v_meta["title"],
+                        "id": video_id,
+                        "thumbnail": v_meta["thumbnail"],
+                        "has_captions": False,
+                        "mode": "whisper_audio",
+                        "order": idx + 1
                     })
                     source_texts.append(
-                        f"=== FUENTE DOCUMENTO PDF '{safe_name}' ({pdf_res['pages']} páginas) ===\n"
-                        f"{pdf_res['content']}"
+                        f"=== FUENTE VIDEO DE YOUTUBE #{idx+1} (AUDIO TRANSCRIPCIÓN WHISPER): '{v_meta['title']}' (ID: {video_id}) ===\n"
+                        f"Transcripción con marcas de tiempo:\n{whisper_res['timed_text']}"
                     )
                 else:
-                    return jsonify({"success": False, "error": pdf_res["error"]}), 400
+                    return jsonify({
+                        "success": False,
+                        "error": f"No se pudo extraer contenido para el video '{v_meta['title']}': {whisper_res.get('error', 'Error de transcripción')}"
+                    }), 400
 
-        if not source_texts:
-            return jsonify({"success": False, "error": "Debes proporcionar al menos un enlace de YouTube o un archivo PDF."}), 400
+    # 2. Procesar documentos PDF subidos
+    uploaded_files = request.files.getlist('pdfFiles')
+    for file in uploaded_files:
+        if file and file.filename and file.filename.lower().endswith('.pdf'):
+            safe_name = secure_filename(file.filename)
+            save_path = UPLOAD_FOLDER / safe_name
+            file.save(save_path)
 
-        # Assemble User Prompt for Final Synthesis (Lightweight Text-Only Call)
-        depth_instructions = {
-            "conciso": "Nivel de profundidad: RESUMEN CONCISO. Enfócate en las ideas centrales, esquemas y conceptos primordiales.",
-            "completo": "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO. Desarrolla todos los temas con rigor, explicaciones paso a paso, ejemplos y fundamentos.",
-            "exhaustivo": "Nivel de profundidad: GUÍA EXHAUSTIVA DE ESTUDIO. Máximo nivel de detalle pedagógico, desglosando cada subtema, fórmula, demostración y casos prácticos."
-        }.get(depth_level, "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO.")
+            pdf_res = extract_pdf_text(str(save_path))
+            try:
+                if save_path.exists():
+                    save_path.unlink()
+            except Exception:
+                pass
 
-        multi_source_hint = f"\nNOTA PEDAGÓGICA: Has recibido {len(collected_sources)} fuentes distintas (pueden ser partes consecutivas de una clase o serie, o documentos complementarios). Sintetiza y unifica todo el material en un único Apunte Maestro armónico, integrando ordenadamente los contenidos de todas las partes sin redundancias.\n" if len(collected_sources) > 1 else ""
+            if pdf_res["success"]:
+                collected_sources.append({
+                    "type": "pdf",
+                    "filename": safe_name,
+                    "pages": pdf_res["pages"]
+                })
+                source_texts.append(
+                    f"=== FUENTE DOCUMENTO PDF '{safe_name}' ({pdf_res['pages']} páginas) ===\n"
+                    f"{pdf_res['content']}"
+                )
+            else:
+                return jsonify({"success": False, "error": pdf_res["error"]}), 400
 
-        user_prompt = f"""
-{depth_instructions}
+    if not source_texts:
+        return jsonify({"success": False, "error": "Debes proporcionar al menos un enlace de YouTube o un archivo PDF."}), 400
+
+    # Ensamblar Prompt de Usuario para Puter.js
+    depth_instructions = {
+        "conciso": "Nivel de profundidad: RESUMEN CONCISO. Enfócate en las ideas centrales, esquemas y conceptos primordiales.",
+        "completo": "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO. Desarrolla todos los temas con rigor, explicaciones paso a paso, ejemplos y fundamentos.",
+        "exhaustivo": "Nivel de profundidad: GUÍA EXHAUSTIVA DE ESTUDIO. Máximo nivel de detalle pedagógico, desglosando cada subtema, fórmula, demostración y casos prácticos."
+    }.get(depth_level, "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO.")
+
+    multi_source_hint = f"\nNOTA PEDAGÓGICA: Has recibido {len(collected_sources)} fuentes distintas (pueden ser partes consecutivas de una clase o serie, o documentos complementarios). Sintetiza y unifica todo el material en un único Apunte Maestro armónico, integrando ordenadamente los contenidos de todas las partes sin redundancias.\n" if len(collected_sources) > 1 else ""
+    custom_inst_text = f"INSTRUCCIONES Y ENFOQUE ESPECIAL DEL ESTUDIANTE: {custom_instructions}" if custom_instructions else ""
+    joined_sources = "\n\n---\n\n".join(source_texts)
+
+    user_prompt = f"""{depth_instructions}
 {multi_source_hint}
-{f"INSTRUCCIONES Y ENFOQUE ESPECIAL DEL ESTUDIANTE: {custom_instructions}" if custom_instructions else ""}
+{custom_inst_text}
 
 A continuación tienes el material fuente analizado para sintetizar:
 
-{"\n\n---\n\n".join(source_texts)}
+{joined_sources}
 
 INSTRUCCIÓN CRÍTICA:
 Genera ÚNICAMENTE el Apunte y Resumen de Estudio. Está TERMINANTEMENTE PROHIBIDO generar quizzes, cuestionarios, flashcards o glosarios. Solo devuelve el JSON con title, topic_overview, estimated_study_time, key_takeaways, general_diagram y developments.
-"""
+Responde ÚNICAMENTE con el objeto JSON, sin texto introductorio ni bloques de formato markdown adicionales."""
 
-        print("[Proceso Síntesis] Generando Apunte Maestro final en formato JSON...")
-        raw_response, synth_model = call_gemini_with_fallback(
-            client=client,
-            contents=user_prompt,
-            system_instruction=SYSTEM_INSTRUCTION,
-            response_mime_type="application/json"
-        )
-
-        # Clean potential markdown wrapping if present
-        if raw_response.startswith("```json"):
-            raw_response = raw_response[7:]
-        if raw_response.startswith("```"):
-            raw_response = raw_response[3:]
-        if raw_response.endswith("```"):
-            raw_response = raw_response[:-3]
-        raw_response = raw_response.strip()
-
-        try:
-            result_data = robust_parse_json(raw_response)
-        except Exception as pe:
-            try:
-                print(f"Error parsing JSON from Gemini: {pe}")
-            except Exception:
-                pass
-            return jsonify({
-                "success": False,
-                "error": f"La IA generó una respuesta pero ocurrió un problema al estructurar los datos ({str(pe)}). Intenta nuevamente.",
-                "raw": raw_response[:400]
-            }), 500
-
-        # Enriquecer desarrollos y fórmulas con video_id para recortes visuales
-        primary_video_id = None
-        for s in collected_sources:
-            if s.get("type") == "youtube" and s.get("id"):
-                primary_video_id = s.get("id")
-                break
-
-        if "developments" in result_data and isinstance(result_data["developments"], list):
-            for dev in result_data["developments"]:
-                if primary_video_id and not dev.get("video_id"):
-                    dev["video_id"] = primary_video_id
-                if "video_snapshot" in dev and isinstance(dev["video_snapshot"], dict):
-                    if primary_video_id and not dev["video_snapshot"].get("video_id"):
-                        dev["video_snapshot"]["video_id"] = primary_video_id
-                if "formulas" in dev and isinstance(dev["formulas"], list):
-                    for f in dev["formulas"]:
-                        if primary_video_id and not f.get("video_id"):
-                            f["video_id"] = primary_video_id
-
-        # Eliminar cualquier residuo de quiz o flashcards
-        result_data.pop("quiz", None)
-        result_data.pop("flashcards", None)
-        result_data.pop("exam_tips", None)
-        result_data.pop("glossary", None)
-
-        result_data["sources"] = collected_sources
-        result_data["video_metadata"] = video_metadata
-        result_data["model_used"] = synth_model
-        
-        return jsonify({
-            "success": True,
-            "model_used": synth_model,
-            "data": result_data
-        })
-
-    except Exception as e:
-        return handle_gemini_error(e)
+    return jsonify({
+        "success": True,
+        "system_instruction": SYSTEM_INSTRUCTION,
+        "user_prompt": user_prompt,
+        "sources": collected_sources
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
