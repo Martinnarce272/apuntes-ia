@@ -7,8 +7,8 @@
 document.addEventListener('DOMContentLoaded', () => {
     // State management
     const state = {
-        puterAuthenticated: false,
-        puterUser: null,
+        customApiKey: localStorage.getItem('gemini_custom_key') || '',
+        hasServerKey: false,
         activeTab: 'tab-notes',
         selectedVideos: [],
         selectedFiles: [],
@@ -27,8 +27,19 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsView: document.getElementById('results-view'),
 
         // Nav & Controls
-        puterStatusChip: document.getElementById('puter-status-chip'),
+        geminiStatusChip: document.getElementById('gemini-status-chip'),
+        btnOpenKeyModal: document.getElementById('btn-open-key-modal'),
         btnThemeToggle: document.getElementById('btn-theme-toggle'),
+
+        // Key Modal Elements
+        modalApiKey: document.getElementById('modal-api-key'),
+        btnCloseKeyModal: document.getElementById('btn-close-key-modal'),
+        modalKeyStatusDot: document.getElementById('modal-key-status-dot'),
+        modalKeyStatusText: document.getElementById('modal-key-status-text'),
+        inputCustomKey: document.getElementById('input-custom-key'),
+        btnToggleKeyVis: document.getElementById('btn-toggle-key-visibility'),
+        btnSaveCustomKey: document.getElementById('btn-save-custom-key'),
+        btnClearKey: document.getElementById('btn-clear-key'),
 
         // Form & Inputs
         generatorForm: document.getElementById('generator-form'),
@@ -108,280 +119,152 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --------------------------------------------------------------------------
-    // 1. Puter.js AI Integration & JSON Parsing
+    // 1. Google Gemini API Status & Key Management
     // --------------------------------------------------------------------------
-    const AI_MODELS_PUTER = [
-        "google/gemini-3.8-flash",
-        "google/gemini-3.7-flash",
-        "google/gemini-3.5-flash",
-        "anthropic/claude-sonnet-5",
-        "openai/gpt-5.6-terra",
-        // Último recurso: modelos gratuitos reales en catálogo de Puter, no consumen saldo de la cuenta
-        "nex-agi/nex-n2.5-pro:free",
-        "openrouter:nex-agi/nex-n2.5-pro:free",
-        "openrouter:google/gemma-4-31b-it:free"
-    ];
+    function updateGeminiStatusChip() {
+        if (!elements.geminiStatusChip) return;
+        if (state.customApiKey) {
+            elements.geminiStatusChip.innerHTML = `
+                <i class="fa-solid fa-bolt" style="color: var(--accent-emerald);"></i>
+                <span>Gemini (Key Propia)</span>
+                <span class="status-dot active"></span>
+            `;
+            elements.geminiStatusChip.title = "Usando clave personalizada de Google Gemini";
+        } else if (state.hasServerKey) {
+            elements.geminiStatusChip.innerHTML = `
+                <i class="fa-solid fa-bolt" style="color: var(--accent-emerald);"></i>
+                <span>Gemini 3.8 Flash</span>
+                <span class="status-dot active"></span>
+            `;
+            elements.geminiStatusChip.title = "Google Gemini Flash activo en el servidor";
+        } else {
+            elements.geminiStatusChip.innerHTML = `
+                <i class="fa-solid fa-key" style="color: var(--accent-amber);"></i>
+                <span>Configurar Gemini Key</span>
+                <span class="status-dot warning"></span>
+            `;
+            elements.geminiStatusChip.title = "Ingresa tu clave gratuita de Google AI Studio";
+        }
 
-    /**
-     * Detecta si un error de Puter corresponde a falta de saldo ("Low Balance" / "not enough funding").
-     */
-    function isLowBalanceError(err) {
-        if (!err) return false;
-        const msg = (err.message || err.error || err.statusText || String(err)).toLowerCase();
-        return msg.includes('low balance') || 
-               msg.includes('not have enough funding') || 
-               msg.includes('not enough funding') || 
-               msg.includes('insufficient') ||
-               msg.includes('out of credit') ||
-               msg.includes('payment required') ||
-               msg.includes('402');
+        updateModalStatusUI();
     }
 
-    /**
-     * Muestra un aviso visible al usuario cuando se utiliza el escalón gratuito de respaldo.
-     */
-    function showFreeModelBanner(modelName) {
-        const banner = document.getElementById('free-model-banner');
-        if (!banner) return;
-        banner.innerHTML = `
-            <i class="fa-solid fa-triangle-exclamation"></i>
-            <span>Se generó con un modelo gratuito de respaldo (<strong>${escapeHtml(modelName)}</strong>) porque tu cuenta de Puter no tiene saldo disponible en este momento — la calidad puede ser menor a la habitual.</span>
-        `;
-        banner.classList.remove('hidden');
-    }
-
-    function removeFreeModelBanner() {
-        const banner = document.getElementById('free-model-banner');
-        if (banner) {
-            banner.classList.add('hidden');
-            banner.innerHTML = '';
+    function updateModalStatusUI() {
+        if (!elements.modalKeyStatusDot || !elements.modalKeyStatusText) return;
+        if (state.customApiKey) {
+            elements.modalKeyStatusDot.className = 'status-dot active';
+            elements.modalKeyStatusText.textContent = 'Clave personalizada activa (guardada localmente).';
+        } else if (state.hasServerKey) {
+            elements.modalKeyStatusDot.className = 'status-dot active';
+            elements.modalKeyStatusText.textContent = 'Clave del servidor (.env) activa y lista para usar.';
+        } else {
+            elements.modalKeyStatusDot.className = 'status-dot warning';
+            elements.modalKeyStatusText.textContent = 'Sin clave configurada. Ingresa una clave gratuita de Google AI Studio abajo.';
         }
     }
 
-    /**
-     * Verifica si hay sesión iniciada en Puter y, si no, fuerza el login con puter.auth.signIn().
-     * Una vez logueado, guarda en el estado que ya está autenticado para no volver a pedirlo en la misma sesión.
-     */
-    async function ensurePuterAuth() {
-        if (typeof puter === 'undefined' || !puter.auth) {
-            throw new Error("Puter.js no se cargó correctamente. Asegúrate de tener conexión a internet y recarga la página.");
+    function openKeyModal() {
+        if (!elements.modalApiKey) return;
+        if (elements.inputCustomKey) {
+            elements.inputCustomKey.value = state.customApiKey || '';
         }
-
-        // Si ya está verificado en el estado y en Puter, evitar chequeos redundantes
-        if (state.puterAuthenticated && puter.auth.isSignedIn()) {
-            return true;
-        }
-
-        // Si no está firmado, forzar el login abriendo el diálogo oficial de Puter
-        if (!puter.auth.isSignedIn()) {
-            console.log("[Puter] Sin sesión iniciada. Abriendo login oficial de Puter...");
-            try {
-                await puter.auth.signIn();
-            } catch (authErr) {
-                console.warn("[Puter] Inicio de sesión cancelado o fallido:", authErr);
-                throw new Error("Necesitás iniciar sesión en Puter para generar el apunte gratis.");
-            }
-        }
-
-        if (!puter.auth.isSignedIn()) {
-            throw new Error("Necesitás iniciar sesión en Puter para generar el apunte gratis.");
-        }
-
-        state.puterAuthenticated = true;
-        try {
-            const user = await puter.auth.getUser();
-            if (user) {
-                state.puterUser = user;
-                updatePuterStatusUI(user);
-            }
-        } catch (e) {}
-
-        return true;
+        updateModalStatusUI();
+        elements.modalApiKey.classList.remove('hidden');
     }
 
-    function updatePuterStatusUI(user) {
-        if (!elements.puterStatusChip) return;
-        const name = user?.username || user?.name || 'Conectado';
-        elements.puterStatusChip.innerHTML = `
-            <i class="fa-solid fa-bolt" style="color: var(--accent-amber);"></i>
-            <span>Gemini Flash (${escapeHtml(name)})</span>
-            <span class="status-dot active"></span>
-        `;
-        elements.puterStatusChip.title = `Sesión activa en Puter: ${name}`;
-    }
-
-    /**
-     * Llama a Puter.js chat iterando por los modelos de AI_MODELS_PUTER con fallback automático.
-     * Centraliza la verificación de puter.auth.isSignedIn() antes de cualquier llamada a la IA.
-     * Si detecta 2 errores de Low Balance seguidos en modelos pagos, salta directamente al escalón gratuito :free.
-     */
-    async function callPuterGeminiWithFallback(systemInstruction, userPrompt) {
-        // Verificación central de autenticación antes de llamar a puter.ai.chat
-        await ensurePuterAuth();
-
-        if (typeof puter === 'undefined' || !puter.ai || !puter.ai.chat) {
-            throw new Error("Puter.js no se cargó correctamente. Asegúrate de tener conexión a internet y recarga la página.");
-        }
-
-        let lastError = null;
-        let consecutiveLowBalance = 0;
-        let skipToFree = false;
-
-        const messages = [
-            { role: 'system', content: systemInstruction },
-            { role: 'user', content: userPrompt }
-        ];
-
-        for (const model of AI_MODELS_PUTER) {
-            const isFreeModel = model.includes(':free');
-
-            // Si se detectaron dos "Low Balance" seguidos en modelos pagos, cortar y saltar a los gratuitos
-            if (skipToFree && !isFreeModel) {
-                console.log(`[Puter] Saltando modelo ${model} debido a falta de saldo en la cuenta.`);
-                continue;
-            }
-
-            try {
-                console.log(`[Puter] Intentando generar apunte con modelo: ${model}...`);
-                const response = await puter.ai.chat(messages, {
-                    model: model,
-                    temperature: 0.2
-                });
-
-                const rawText = response?.message?.content || (typeof response === 'string' ? response : response?.toString()) || '';
-                if (rawText && rawText.trim()) {
-                    console.log(`[Puter] ¡Generación exitosa con ${model}! Longitud: ${rawText.length} caracteres. (Gratuito: ${isFreeModel})`);
-                    return { 
-                        text: rawText.trim(), 
-                        model: model,
-                        isFree: isFreeModel
-                    };
-                }
-            } catch (err) {
-                console.warn(`[Puter] Falló el modelo ${model}:`, err?.message || err);
-                lastError = err;
-
-                if (!isFreeModel && isLowBalanceError(err)) {
-                    consecutiveLowBalance++;
-                    if (consecutiveLowBalance >= 2) {
-                        console.warn("[Puter] Dos errores seguidos de 'Low Balance'. Cortando modelos pagos y activando escalón gratuito :free...");
-                        skipToFree = true;
-                    }
-                }
-            }
-        }
-
-        const errMsg = lastError?.message || lastError?.toString() || "Error desconocido en Puter AI";
-        throw new Error(`No se pudo generar el apunte con los modelos disponibles en Puter (${errMsg}).`);
-    }
-
-    /**
-     * Parsea respuestas JSON de IA de forma robusta en JavaScript.
-     * Limpia bloques markdown ```json ... ```, extrae la porción {...} y repara escapes de LaTeX.
-     */
-    function robustParseJson(rawText) {
-        if (!rawText || typeof rawText !== 'string') {
-            throw new Error("Respuesta vacía o formato inválido recibido de la IA.");
-        }
-
-        let text = rawText.trim();
-        if (text.startsWith("```json")) {
-            text = text.substring(7);
-        } else if (text.startsWith("```")) {
-            text = text.substring(3);
-        }
-        if (text.endsWith("```")) {
-            text = text.substring(0, text.length - 3);
-        }
-        text = text.trim();
-
-        const start = text.indexOf('{');
-        const end = text.lastIndexOf('}');
-        if (start !== -1 && end !== -1 && end >= start) {
-            text = text.substring(start, end + 1);
-        }
-
-        // 1. Intentar JSON.parse directo
-        try {
-            return JSON.parse(text);
-        } catch (e) {
-            // Continuar con saneamiento
-        }
-
-        // 2. Reparar macros de LaTeX que usan barras invertidas (\frac, \Delta, \sigma, etc.)
-        try {
-            const fixed = text.replace(/\\(.)([a-zA-Z]?)/g, (match, following, after) => {
-                if (['"', '\\', '/'].includes(following)) {
-                    return match;
-                }
-                if (['n', 't', 'r', 'b', 'f'].includes(following)) {
-                    if (after && /[a-zA-Z]/.test(after)) {
-                        return '\\\\' + following + after;
-                    }
-                    return match;
-                }
-                return '\\\\' + match.slice(1);
-            });
-            return JSON.parse(fixed);
-        } catch (e2) {
-            // Continuar al fallback
-        }
-
-        // 3. Fallback: escapar todas las barras invertidas que no van seguidas de " o \
-        try {
-            const fixed2 = text.replace(/\\(?![/"\\])/g, '\\\\');
-            return JSON.parse(fixed2);
-        } catch (e3) {
-            console.error("[robustParseJson] Error irrecuperable parseando JSON:", text);
-            throw new Error("La IA generó una estructura que no pudo ser procesada como JSON válido. Intenta generar nuevamente.");
-        }
+    function closeKeyModal() {
+        if (!elements.modalApiKey) return;
+        elements.modalApiKey.classList.add('hidden');
     }
 
     async function checkServerStatus() {
         try {
             const res = await fetch('/api/status');
             const data = await res.json();
-            console.log('[Status] Servidor listo. Motor:', data.engine || 'Puter.js');
-
-            // Detectar si el usuario ya tenía sesión iniciada previamente en Puter
-            if (typeof puter !== 'undefined' && puter.auth && puter.auth.isSignedIn()) {
-                state.puterAuthenticated = true;
-                try {
-                    const user = await puter.auth.getUser();
-                    if (user) {
-                        state.puterUser = user;
-                        updatePuterStatusUI(user);
-                    }
-                } catch (e) {}
-            }
+            state.hasServerKey = Boolean(data.has_api_key);
+            console.log('[Status] Servidor listo. Motor:', data.engine, 'Key en servidor:', state.hasServerKey);
+            updateGeminiStatusChip();
         } catch (err) {
             console.warn('[Status] No se pudo verificar estado del servidor:', err);
+            updateGeminiStatusChip();
         }
     }
 
-    // Permitir clic en el chip de estado de Puter para ver o iniciar sesión
-    if (elements.puterStatusChip) {
-        elements.puterStatusChip.style.cursor = 'pointer';
-        elements.puterStatusChip.addEventListener('click', async () => {
-            if (typeof puter === 'undefined' || !puter.auth) return;
-            if (!puter.auth.isSignedIn()) {
-                try {
-                    await puter.auth.signIn();
-                    state.puterAuthenticated = true;
-                    const u = await puter.auth.getUser();
-                    if (u) updatePuterStatusUI(u);
-                    showToast("¡Sesión iniciada con éxito en Puter!", "success");
-                } catch (e) {
-                    showToast("Inicio de sesión cancelado.", "info");
-                }
-            } else {
-                try {
-                    const u = await puter.auth.getUser();
-                    showToast(`Conectado a Puter como ${u?.username || 'usuario'}`, "info");
-                } catch (e) {
-                    showToast("Conectado a Puter", "info");
-                }
+    // Modal wire-up
+    if (elements.btnOpenKeyModal) {
+        elements.btnOpenKeyModal.addEventListener('click', openKeyModal);
+    }
+    if (elements.geminiStatusChip) {
+        elements.geminiStatusChip.style.cursor = 'pointer';
+        elements.geminiStatusChip.addEventListener('click', openKeyModal);
+    }
+    if (elements.btnCloseKeyModal) {
+        elements.btnCloseKeyModal.addEventListener('click', closeKeyModal);
+    }
+    if (elements.modalApiKey) {
+        elements.modalApiKey.addEventListener('click', (e) => {
+            if (e.target === elements.modalApiKey) closeKeyModal();
+        });
+    }
+
+    // Toggle key visibility in modal
+    if (elements.btnToggleKeyVis && elements.inputCustomKey) {
+        elements.btnToggleKeyVis.addEventListener('click', () => {
+            const isPass = elements.inputCustomKey.type === 'password';
+            elements.inputCustomKey.type = isPass ? 'text' : 'password';
+            const icon = elements.btnToggleKeyVis.querySelector('i');
+            if (icon) {
+                icon.className = isPass ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
             }
+        });
+    }
+
+    // Save key
+    if (elements.btnSaveCustomKey) {
+        elements.btnSaveCustomKey.addEventListener('click', async () => {
+            const keyVal = elements.inputCustomKey ? elements.inputCustomKey.value.trim() : '';
+            if (!keyVal) {
+                showToast("Ingresa una clave válida de Google AI Studio.", "warning");
+                return;
+            }
+
+            elements.btnSaveCustomKey.disabled = true;
+            elements.btnSaveCustomKey.textContent = "Validando...";
+
+            try {
+                const res = await fetch('/api/save-key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ apiKey: keyVal })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    state.customApiKey = keyVal;
+                    localStorage.setItem('gemini_custom_key', keyVal);
+                    updateGeminiStatusChip();
+                    showToast("¡Clave de Google Gemini validada y guardada!", "success");
+                    closeKeyModal();
+                } else {
+                    showToast(data.error || "Clave no válida. Verifica que pertenezca a Google AI Studio.", "error");
+                }
+            } catch (e) {
+                showToast("Error al verificar la clave con Google.", "error");
+            } finally {
+                elements.btnSaveCustomKey.disabled = false;
+                elements.btnSaveCustomKey.textContent = "Guardar y Activar";
+            }
+        });
+    }
+
+    // Clear key
+    if (elements.btnClearKey) {
+        elements.btnClearKey.addEventListener('click', () => {
+            state.customApiKey = '';
+            localStorage.removeItem('gemini_custom_key');
+            if (elements.inputCustomKey) elements.inputCustomKey.value = '';
+            updateGeminiStatusChip();
+            showToast("Clave personalizada eliminada.", "info");
         });
     }
 
@@ -640,11 +523,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Verificar o solicitar inicio de sesión en Puter antes de comenzar
-        try {
-            await ensurePuterAuth();
-        } catch (authErr) {
-            showToast(authErr.message || "Necesitás iniciar sesión en Puter para generar el apunte gratis.", "warning");
+        // Si no hay clave configurada en el navegador ni en el servidor, abrir modal
+        if (!state.customApiKey && !state.hasServerKey) {
+            openKeyModal();
+            showToast('Ingresa tu clave gratuita de Google AI Studio para generar apuntes.', 'warning');
             return;
         }
 
@@ -663,11 +545,27 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('pdfFiles', file);
         });
 
+        if (state.customApiKey) {
+            formData.append('apiKey', state.customApiKey);
+        }
+
+        const headers = {};
+        if (state.customApiKey) {
+            headers['X-Gemini-Api-Key'] = state.customApiKey;
+        }
+
         try {
-            // 1. Extracción de fuentes en el backend (YouTube / Whisper / PDF)
+            // 1. Extracción y generación directa con Google Gemini Flash
             setLoadingStage(1);
+
+            // Transición visual a etapa de generación tras unos segundos
+            setTimeout(() => {
+                if (currentStage === 1) setLoadingStage(2);
+            }, 2000);
+
             const response = await fetch('/api/generate-notes', {
                 method: 'POST',
+                headers: headers,
                 body: formData
             });
 
@@ -682,62 +580,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            if (response.status === 401 || backendData.error_code === 'no_api_key') {
+                switchView('input');
+                openKeyModal();
+                showToast(backendData.error || 'Se requiere una clave de Google AI Studio.', 'warning');
+                return;
+            }
+
             if (!backendData.success) {
                 switchView('input');
-                showToast(backendData.error || 'Error al procesar las fuentes.', 'error');
+                showToast(backendData.error || 'Error al generar el apunte.', 'error');
                 return;
             }
 
-            // 2. Generación pedagógica con Gemini vía Puter.js (en el navegador, sin API key)
-            setLoadingStage(2);
-            let puterResult;
-            try {
-                puterResult = await callPuterGeminiWithFallback(
-                    backendData.system_instruction,
-                    backendData.user_prompt
-                );
-            } catch (aiErr) {
-                console.error('Error durante la generación con Puter.js:', aiErr);
-                switchView('input');
-                showToast(aiErr.message || 'Error al conectar con la IA de Gemini.', 'error');
-                return;
-            }
-
-            // 3. Estructuración y parseo robusto del JSON
+            // 2. Estructuración y renderizado
             setLoadingStage(3);
-            let parsedData;
-            try {
-                parsedData = robustParseJson(puterResult.text);
-            } catch (parseErr) {
-                console.error('Error parseando JSON de Puter:', parseErr, puterResult.text);
-                switchView('input');
-                showToast(parseErr.message || 'Error al estructurar el JSON del apunte.', 'error');
-                return;
-            }
 
-            // Incorporar fuentes procesadas por el backend y asociar video_ids para fórmulas
-            if (backendData.sources && Array.isArray(backendData.sources)) {
-                parsedData.sources = backendData.sources;
-                const ytSources = backendData.sources.filter(s => s.type === 'youtube');
-                if (ytSources.length === 1 && parsedData.formulas) {
-                    parsedData.formulas.forEach(f => {
-                        if (!f.video_id) f.video_id = ytSources[0].id;
-                    });
-                }
-            }
-
-            // Éxito: Renderizar apunte completo
-            state.currentResult = parsedData;
-            renderStudyMaterial(parsedData);
+            state.currentResult = backendData.data;
+            renderStudyMaterial(backendData.data);
             switchView('results');
 
-            if (puterResult.isFree) {
-                showToast("Se generó con un modelo gratuito de respaldo porque tu cuenta de Puter no tiene saldo disponible en este momento — la calidad puede ser menor a la habitual.", "warning");
-                showFreeModelBanner(puterResult.model);
-            } else {
-                removeFreeModelBanner();
-                showToast(`¡Apunte generado con éxito usando ${puterResult.model}!`, 'success');
-            }
+            showToast(`¡Apunte generado con éxito usando ${backendData.model_used || 'Google Gemini Flash'}!`, 'success');
 
         } catch (err) {
             console.error('Error during generation flow:', err);
@@ -764,7 +627,7 @@ document.addEventListener('DOMContentLoaded', () => {
             elements.step1.className = 'step-item completed';
             elements.step2.className = 'step-item active';
             elements.step3.className = 'step-item';
-            elements.loadingStatusTitle.textContent = 'Generando apunte con Gemini (vía Puter)...';
+            elements.loadingStatusTitle.textContent = 'Generando apunte con Gemini Flash...';
             elements.loadingStatusDesc.textContent = 'Sintetizando conceptos clave, fórmulas KaTeX y desarrollos pedagógicos.';
         } else if (stage === 3) {
             progressPct = Math.max(progressPct, 92);

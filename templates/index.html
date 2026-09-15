@@ -24,11 +24,8 @@
     <!-- Mermaid.js for interactive diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 
-    <!-- Puter.js for free Gemini AI access -->
-    <script src="https://js.puter.com/v2/"></script>
-
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=10.0">
+    <link rel="stylesheet" href="/static/css/style.css?v=11.0">
 </head>
 <body>
     <div class="app-container">
@@ -40,7 +37,7 @@
                 </div>
                 <div class="brand-text">
                     <span class="brand-name">Apuntes<span>IA</span></span>
-                    <span class="brand-tagline">Estudio Inteligente con Gemini & Puter</span>
+                    <span class="brand-tagline">Estudio Inteligente con Google Gemini Flash</span>
                 </div>
             </div>
 
@@ -50,12 +47,17 @@
                     <span>Ver Apunte de Ejemplo</span>
                 </button>
 
-                <!-- Estado de IA con Puter.js -->
-                <div class="ai-status-chip" id="puter-status-chip" title="Generación activa con Gemini vía Puter.js (Gratis y sin límites)">
-                    <i class="fa-solid fa-bolt" style="color: var(--accent-amber);"></i>
-                    <span>Gemini Flash</span>
+                <!-- Estado de IA con Google Gemini -->
+                <div class="ai-status-chip" id="gemini-status-chip" title="Generación activa con Google Gemini Flash">
+                    <i class="fa-solid fa-bolt" style="color: var(--accent-emerald);"></i>
+                    <span>Gemini 3.8 Flash</span>
                     <span class="status-dot active"></span>
                 </div>
+
+                <button id="btn-open-key-modal" class="btn-subtle nav-btn" title="Configurar clave gratuita de Google AI Studio">
+                    <i class="fa-solid fa-key"></i>
+                    <span>API Key</span>
+                </button>
 
                 <button id="btn-theme-toggle" class="icon-btn" title="Cambiar tema">
                     <i class="fa-solid fa-moon"></i>
@@ -214,8 +216,8 @@
 
                     <div class="step-indicators">
                         <div class="step-item active" id="step-1"><i class="fa-solid fa-check"></i> Extrayendo fuentes</div>
-                        <div class="step-item" id="step-2"><i class="fa-solid fa-circle"></i> Generando apunte con Gemini (vía Puter)</div>
-                        <div class="step-item" id="step-3"><i class="fa-solid fa-circle"></i> Estructurando resultado</div>
+                        <div class="step-item" id="step-2"><i class="fa-solid fa-circle"></i> Generando apunte con Gemini Flash</div>
+                        <div class="step-item" id="step-3"><i class="fa-solid fa-circle"></i> Estructurando fórmulas y diagramas</div>
                     </div>
                 </div>
             </section>
@@ -242,9 +244,6 @@
                         </button>
                     </div>
                 </div>
-
-                <!-- Banner de modelo gratuito de respaldo cuando no hay saldo -->
-                <div id="free-model-banner" class="free-model-banner hidden"></div>
 
                 <!-- TAB 1: NOTES & DEVELOPMENTS (APUNTE Y RESUMEN) -->
                 <div id="tab-notes" class="tab-pane active">
@@ -306,9 +305,54 @@
             <i class="fa-solid fa-info-circle toast-icon"></i>
             <span id="toast-msg">Mensaje</span>
         </div>
+
+        <!-- Modal para Configurar Google Gemini API Key -->
+        <div id="modal-api-key" class="modal-overlay hidden">
+            <div class="modal-card">
+                <div class="modal-header">
+                    <div class="modal-title-group">
+                        <i class="fa-solid fa-key" style="color: var(--accent-emerald);"></i>
+                        <h3>Configurar Google Gemini API</h3>
+                    </div>
+                    <button type="button" id="btn-close-key-modal" class="icon-btn" title="Cerrar">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-desc">
+                        Google ofrece acceso <strong>100% gratuito</strong> a Gemini Flash (15 solicitudes por minuto y 1 millón de tokens de contexto). No requiere tarjeta de crédito.
+                    </p>
+                    <div class="key-status-indicator" id="key-status-indicator">
+                        <span class="status-dot" id="modal-key-status-dot"></span>
+                        <span id="modal-key-status-text">Verificando estado...</span>
+                    </div>
+                    <div class="form-group" style="margin-top: 1rem;">
+                        <label for="input-custom-key">Tu clave de Google AI Studio:</label>
+                        <div class="input-with-icon">
+                            <i class="fa-solid fa-lock input-icon"></i>
+                            <input type="password" id="input-custom-key" placeholder="AIzaSy..." autocomplete="off">
+                            <button type="button" id="btn-toggle-key-visibility" class="icon-btn toggle-vis" title="Mostrar/ocultar clave">
+                                <i class="fa-solid fa-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="free-key-link-box">
+                        <i class="fa-solid fa-circle-info"></i>
+                        <span>¿No tienes una clave todavía? Consigue una gratis en 30 segundos:</span>
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="btn-link">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> Obtener clave gratis en Google AI Studio
+                        </a>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" id="btn-clear-key" class="btn-secondary">Borrar Clave</button>
+                    <button type="button" id="btn-save-custom-key" class="btn-primary">Guardar y Activar</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Application Script -->
-    <script src="/static/js/app.js?v=10.2"></script>
+    <script src="/static/js/app.js?v=11.0"></script>
 </body>
 </html>

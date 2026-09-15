@@ -622,14 +622,78 @@ def get_demo_notes():
 def index():
     return render_template('index.html')
 
+MODELS_GEMINI = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
+
+def call_gemini_api_with_fallback(system_instruction, user_prompt, api_key):
+    """
+    Llama directamente a la API oficial de Google Gemini via REST, con fallback
+    automático entre gemini-3.8-flash -> gemini-3.7-flash -> gemini-3.5-flash.
+    """
+    if not api_key:
+        raise ValueError("No se proporcionó una clave de API de Google Gemini.")
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": f"{system_instruction}\n\n{user_prompt}"}]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.2
+        }
+    }
+
+    last_error = None
+    for model in MODELS_GEMINI:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        try:
+            print(f"[Gemini Direct] Intentando generar con {model}...")
+            resp = requests.post(url, json=payload, timeout=90)
+            if resp.status_code == 200:
+                data = resp.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                print(f"[Gemini Direct] ¡Éxito con {model}! Longitud: {len(text)} caracteres.")
+                return text, model
+            else:
+                err_data = resp.text[:300]
+                print(f"[Gemini Direct] Error {resp.status_code} con {model}: {err_data}")
+                last_error = Exception(f"Gemini API {resp.status_code} ({model}): {err_data}")
+        except Exception as ex:
+            print(f"[Gemini Direct] Excepción con {model}: {ex}")
+            last_error = ex
+
+    raise last_error or Exception("No se pudo generar respuesta con los modelos disponibles de Gemini.")
+
 @app.route('/api/status', methods=['GET'])
 def check_status():
-    """Indica que el backend está listo para procesar fuentes y delegar a Puter.js."""
+    """Indica que el backend está listo y si cuenta con clave de Google Gemini activa."""
+    has_key = bool(os.environ.get('GEMINI_API_KEY'))
     return jsonify({
         "status": "ready",
-        "engine": "puter.js",
-        "puter_ready": True
+        "has_api_key": has_key,
+        "engine": "gemini-direct"
     })
+
+@app.route('/api/save-key', methods=['POST'])
+def save_key():
+    """Valida y guarda temporalmente una clave de API de Google Gemini."""
+    data = request.get_json() or {}
+    key = data.get('apiKey', '').strip()
+    if not key:
+        return jsonify({"success": False, "error": "Clave no proporcionada"}), 400
+    
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={key}"
+        r = requests.post(url, json={"contents": [{"parts": [{"text": "ping"}]}]}, timeout=10)
+        if r.status_code == 200:
+            os.environ['GEMINI_API_KEY'] = key
+            return jsonify({"success": True, "message": "Clave de Google Gemini verificada y activa."})
+        else:
+            return jsonify({"success": False, "error": f"Clave inválida o sin cuota disponible (código {r.status_code})"}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Error conectando con Google Gemini: {e}"}), 400
 
 @app.route('/api/youtube-preview', methods=['POST'])
 def youtube_preview():
@@ -647,11 +711,23 @@ def youtube_preview():
 @app.route('/api/generate-notes', methods=['POST'])
 def generate_notes():
     """
-    Extrae fuentes (YouTube con subtítulos o Whisper, documentos PDF) y construye el prompt pedagógico.
-    Devuelve los prompts estructurados para que Puter.js ejecute la inferencia directamente en el navegador del usuario.
+    Extrae fuentes (YouTube con subtítulos o Whisper, documentos PDF) y genera el apunte
+    maestro directamente con Google Gemini Flash (3.8 / 3.7 / 3.5).
     """
     custom_instructions = request.form.get('instructions', '').strip()
     depth_level = request.form.get('depth', 'completo')  # 'conciso', 'completo', 'exhaustivo'
+
+    # Clave de API enviada por el navegador o del entorno
+    api_key = request.headers.get('X-Gemini-Api-Key', '').strip() or \
+              request.form.get('apiKey', '').strip() or \
+              os.environ.get('GEMINI_API_KEY', '').strip()
+
+    if not api_key:
+        return jsonify({
+            "success": False,
+            "error_code": "no_api_key",
+            "error": "No se encontró una clave de API de Google Gemini. Ingresa tu clave gratuita de Google AI Studio."
+        }), 401
 
     collected_sources = []
     source_texts = []
@@ -746,7 +822,7 @@ def generate_notes():
     if not source_texts:
         return jsonify({"success": False, "error": "Debes proporcionar al menos un enlace de YouTube o un archivo PDF."}), 400
 
-    # Ensamblar Prompt de Usuario para Puter.js
+    # Ensamblar Prompt de Usuario para Gemini
     depth_instructions = {
         "conciso": "Nivel de profundidad: RESUMEN CONCISO. Enfócate en las ideas centrales, esquemas y conceptos primordiales.",
         "completo": "Nivel de profundidad: APUNTE COMPLETO UNIVERSITARIO. Desarrolla todos los temas con rigor, explicaciones paso a paso, ejemplos y fundamentos.",
@@ -769,12 +845,30 @@ INSTRUCCIÓN CRÍTICA:
 Genera ÚNICAMENTE el Apunte y Resumen de Estudio. Está TERMINANTEMENTE PROHIBIDO generar quizzes, cuestionarios, flashcards o glosarios. Solo devuelve el JSON con title, topic_overview, estimated_study_time, key_takeaways, general_diagram y developments.
 Responde ÚNICAMENTE con el objeto JSON, sin texto introductorio ni bloques de formato markdown adicionales."""
 
-    return jsonify({
-        "success": True,
-        "system_instruction": SYSTEM_INSTRUCTION,
-        "user_prompt": user_prompt,
-        "sources": collected_sources
-    })
+    # Generación directa con Gemini Flash y fallback automático
+    try:
+        raw_result, model_used = call_gemini_api_with_fallback(SYSTEM_INSTRUCTION, user_prompt, api_key)
+        parsed_notes = robust_parse_json(raw_result)
+        parsed_notes["sources"] = collected_sources
+
+        # Asociar video_id en fórmulas si sólo hay 1 video de YouTube
+        yt_sources = [s for s in collected_sources if s.get("type") == "youtube"]
+        if len(yt_sources) == 1 and "formulas" in parsed_notes:
+            for f in parsed_notes.get("formulas", []):
+                if not f.get("video_id"):
+                    f["video_id"] = yt_sources[0]["id"]
+
+        return jsonify({
+            "success": True,
+            "data": parsed_notes,
+            "model_used": model_used
+        })
+    except Exception as e:
+        print(f"[Error Generación Gemini] {e}")
+        return jsonify({
+            "success": False,
+            "error": f"Error al generar el apunte con Gemini: {str(e)}"
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
