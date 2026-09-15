@@ -7,6 +7,8 @@
 document.addEventListener('DOMContentLoaded', () => {
     // State management
     const state = {
+        puterAuthenticated: false,
+        puterUser: null,
         activeTab: 'tab-notes',
         selectedVideos: [],
         selectedFiles: [],
@@ -117,9 +119,65 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     /**
+     * Verifica si hay sesión iniciada en Puter y, si no, fuerza el login con puter.auth.signIn().
+     * Una vez logueado, guarda en el estado que ya está autenticado para no volver a pedirlo en la misma sesión.
+     */
+    async function ensurePuterAuth() {
+        if (typeof puter === 'undefined' || !puter.auth) {
+            throw new Error("Puter.js no se cargó correctamente. Asegúrate de tener conexión a internet y recarga la página.");
+        }
+
+        // Si ya está verificado en el estado y en Puter, evitar chequeos redundantes
+        if (state.puterAuthenticated && puter.auth.isSignedIn()) {
+            return true;
+        }
+
+        // Si no está firmado, forzar el login abriendo el diálogo oficial de Puter
+        if (!puter.auth.isSignedIn()) {
+            console.log("[Puter] Sin sesión iniciada. Abriendo login oficial de Puter...");
+            try {
+                await puter.auth.signIn();
+            } catch (authErr) {
+                console.warn("[Puter] Inicio de sesión cancelado o fallido:", authErr);
+                throw new Error("Necesitás iniciar sesión en Puter para generar el apunte gratis.");
+            }
+        }
+
+        if (!puter.auth.isSignedIn()) {
+            throw new Error("Necesitás iniciar sesión en Puter para generar el apunte gratis.");
+        }
+
+        state.puterAuthenticated = true;
+        try {
+            const user = await puter.auth.getUser();
+            if (user) {
+                state.puterUser = user;
+                updatePuterStatusUI(user);
+            }
+        } catch (e) {}
+
+        return true;
+    }
+
+    function updatePuterStatusUI(user) {
+        if (!elements.puterStatusChip) return;
+        const name = user?.username || user?.name || 'Conectado';
+        elements.puterStatusChip.innerHTML = `
+            <i class="fa-solid fa-bolt" style="color: var(--accent-amber);"></i>
+            <span>Gemini Flash (${escapeHtml(name)})</span>
+            <span class="status-dot active"></span>
+        `;
+        elements.puterStatusChip.title = `Sesión activa en Puter: ${name}`;
+    }
+
+    /**
      * Llama a Puter.js chat iterando por los modelos de Gemini con fallback automático.
+     * Centraliza la verificación de puter.auth.isSignedIn() antes de cualquier llamada a la IA.
      */
     async function callPuterGeminiWithFallback(systemInstruction, userPrompt) {
+        // Verificación central de autenticación antes de llamar a puter.ai.chat
+        await ensurePuterAuth();
+
         if (typeof puter === 'undefined' || !puter.ai || !puter.ai.chat) {
             throw new Error("Puter.js no se cargó correctamente. Asegúrate de tener conexión a internet y recarga la página.");
         }
@@ -220,9 +278,47 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch('/api/status');
             const data = await res.json();
             console.log('[Status] Servidor listo. Motor:', data.engine || 'Puter.js');
+
+            // Detectar si el usuario ya tenía sesión iniciada previamente en Puter
+            if (typeof puter !== 'undefined' && puter.auth && puter.auth.isSignedIn()) {
+                state.puterAuthenticated = true;
+                try {
+                    const user = await puter.auth.getUser();
+                    if (user) {
+                        state.puterUser = user;
+                        updatePuterStatusUI(user);
+                    }
+                } catch (e) {}
+            }
         } catch (err) {
             console.warn('[Status] No se pudo verificar estado del servidor:', err);
         }
+    }
+
+    // Permitir clic en el chip de estado de Puter para ver o iniciar sesión
+    if (elements.puterStatusChip) {
+        elements.puterStatusChip.style.cursor = 'pointer';
+        elements.puterStatusChip.addEventListener('click', async () => {
+            if (typeof puter === 'undefined' || !puter.auth) return;
+            if (!puter.auth.isSignedIn()) {
+                try {
+                    await puter.auth.signIn();
+                    state.puterAuthenticated = true;
+                    const u = await puter.auth.getUser();
+                    if (u) updatePuterStatusUI(u);
+                    showToast("¡Sesión iniciada con éxito en Puter!", "success");
+                } catch (e) {
+                    showToast("Inicio de sesión cancelado.", "info");
+                }
+            } else {
+                try {
+                    const u = await puter.auth.getUser();
+                    showToast(`Conectado a Puter como ${u?.username || 'usuario'}`, "info");
+                } catch (e) {
+                    showToast("Conectado a Puter", "info");
+                }
+            }
+        });
     }
 
     // Demo button handler
@@ -477,6 +573,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (!hasVideos && !hasPdfs) {
             showToast('Por favor agrega al menos un enlace de YouTube o sube un archivo PDF.', 'error');
+            return;
+        }
+
+        // Verificar o solicitar inicio de sesión en Puter antes de comenzar
+        try {
+            await ensurePuterAuth();
+        } catch (authErr) {
+            showToast(authErr.message || "Necesitás iniciar sesión en Puter para generar el apunte gratis.", "warning");
             return;
         }
 
