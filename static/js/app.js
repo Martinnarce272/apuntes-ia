@@ -108,15 +108,55 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --------------------------------------------------------------------------
-    // 1. Puter.js Gemini AI Integration & JSON Parsing
+    // 1. Puter.js AI Integration & JSON Parsing
     // --------------------------------------------------------------------------
-    const GEMINI_MODELS_PUTER = [
+    const AI_MODELS_PUTER = [
         "google/gemini-3.8-flash",
         "google/gemini-3.7-flash",
-        "google/gemini-3.6-flash",
         "google/gemini-3.5-flash",
-        "gemini-2.5-flash"
+        "anthropic/claude-sonnet-5",
+        "openai/gpt-5.6-terra",
+        // Último recurso: modelos gratuitos reales en catálogo de Puter, no consumen saldo de la cuenta
+        "nex-agi/nex-n2.5-pro:free",
+        "openrouter:nex-agi/nex-n2.5-pro:free",
+        "openrouter:google/gemma-4-31b-it:free"
     ];
+
+    /**
+     * Detecta si un error de Puter corresponde a falta de saldo ("Low Balance" / "not enough funding").
+     */
+    function isLowBalanceError(err) {
+        if (!err) return false;
+        const msg = (err.message || err.error || err.statusText || String(err)).toLowerCase();
+        return msg.includes('low balance') || 
+               msg.includes('not have enough funding') || 
+               msg.includes('not enough funding') || 
+               msg.includes('insufficient') ||
+               msg.includes('out of credit') ||
+               msg.includes('payment required') ||
+               msg.includes('402');
+    }
+
+    /**
+     * Muestra un aviso visible al usuario cuando se utiliza el escalón gratuito de respaldo.
+     */
+    function showFreeModelBanner(modelName) {
+        const banner = document.getElementById('free-model-banner');
+        if (!banner) return;
+        banner.innerHTML = `
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <span>Se generó con un modelo gratuito de respaldo (<strong>${escapeHtml(modelName)}</strong>) porque tu cuenta de Puter no tiene saldo disponible en este momento — la calidad puede ser menor a la habitual.</span>
+        `;
+        banner.classList.remove('hidden');
+    }
+
+    function removeFreeModelBanner() {
+        const banner = document.getElementById('free-model-banner');
+        if (banner) {
+            banner.classList.add('hidden');
+            banner.innerHTML = '';
+        }
+    }
 
     /**
      * Verifica si hay sesión iniciada en Puter y, si no, fuerza el login con puter.auth.signIn().
@@ -171,8 +211,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
-     * Llama a Puter.js chat iterando por los modelos de Gemini con fallback automático.
+     * Llama a Puter.js chat iterando por los modelos de AI_MODELS_PUTER con fallback automático.
      * Centraliza la verificación de puter.auth.isSignedIn() antes de cualquier llamada a la IA.
+     * Si detecta 2 errores de Low Balance seguidos en modelos pagos, salta directamente al escalón gratuito :free.
      */
     async function callPuterGeminiWithFallback(systemInstruction, userPrompt) {
         // Verificación central de autenticación antes de llamar a puter.ai.chat
@@ -183,12 +224,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         let lastError = null;
+        let consecutiveLowBalance = 0;
+        let skipToFree = false;
+
         const messages = [
             { role: 'system', content: systemInstruction },
             { role: 'user', content: userPrompt }
         ];
 
-        for (const model of GEMINI_MODELS_PUTER) {
+        for (const model of AI_MODELS_PUTER) {
+            const isFreeModel = model.includes(':free');
+
+            // Si se detectaron dos "Low Balance" seguidos en modelos pagos, cortar y saltar a los gratuitos
+            if (skipToFree && !isFreeModel) {
+                console.log(`[Puter] Saltando modelo ${model} debido a falta de saldo en la cuenta.`);
+                continue;
+            }
+
             try {
                 console.log(`[Puter] Intentando generar apunte con modelo: ${model}...`);
                 const response = await puter.ai.chat(messages, {
@@ -198,17 +250,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const rawText = response?.message?.content || (typeof response === 'string' ? response : response?.toString()) || '';
                 if (rawText && rawText.trim()) {
-                    console.log(`[Puter] ¡Generación exitosa con ${model}! Longitud: ${rawText.length} caracteres.`);
-                    return { text: rawText.trim(), model: model };
+                    console.log(`[Puter] ¡Generación exitosa con ${model}! Longitud: ${rawText.length} caracteres. (Gratuito: ${isFreeModel})`);
+                    return { 
+                        text: rawText.trim(), 
+                        model: model,
+                        isFree: isFreeModel
+                    };
                 }
             } catch (err) {
                 console.warn(`[Puter] Falló el modelo ${model}:`, err?.message || err);
                 lastError = err;
+
+                if (!isFreeModel && isLowBalanceError(err)) {
+                    consecutiveLowBalance++;
+                    if (consecutiveLowBalance >= 2) {
+                        console.warn("[Puter] Dos errores seguidos de 'Low Balance'. Cortando modelos pagos y activando escalón gratuito :free...");
+                        skipToFree = true;
+                    }
+                }
             }
         }
 
         const errMsg = lastError?.message || lastError?.toString() || "Error desconocido en Puter AI";
-        throw new Error(`No se pudo generar el apunte con los modelos de Gemini disponibles en Puter (${errMsg}).`);
+        throw new Error(`No se pudo generar el apunte con los modelos disponibles en Puter (${errMsg}).`);
     }
 
     /**
@@ -666,7 +730,14 @@ document.addEventListener('DOMContentLoaded', () => {
             state.currentResult = parsedData;
             renderStudyMaterial(parsedData);
             switchView('results');
-            showToast(`¡Apunte generado con éxito usando ${puterResult.model}!`, 'success');
+
+            if (puterResult.isFree) {
+                showToast("Se generó con un modelo gratuito de respaldo porque tu cuenta de Puter no tiene saldo disponible en este momento — la calidad puede ser menor a la habitual.", "warning");
+                showFreeModelBanner(puterResult.model);
+            } else {
+                removeFreeModelBanner();
+                showToast(`¡Apunte generado con éxito usando ${puterResult.model}!`, 'success');
+            }
 
         } catch (err) {
             console.error('Error during generation flow:', err);
